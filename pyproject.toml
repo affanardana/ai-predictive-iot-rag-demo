@@ -12,10 +12,9 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-# Only `apps/api` is a member in Phase 1. `services/simulator/` and `ml/` are
-# added here when they gain real dependencies, so we never carry empty stub
-# projects through `uv sync`.
-members = ["apps/api"]
+# `ml/` joins when it gains real dependencies, so we never carry an empty stub
+# project through `uv sync`.
+members = ["apps/api", "services/simulator"]
 
 # Dev tooling is shared across every workspace member.
 [dependency-groups]
@@ -35,7 +34,11 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["apps/api/src", "apps/api/tests"]
+src = [
+    "apps/api/src",
+    "apps/api/tests",
+    "services/simulator/src",
+]
 extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
@@ -65,20 +68,33 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101", "ANN001", "ANN201", "ANN202", "D103"]
 "**/migrations/**" = ["D", "ANN", "E501", "S105"]
+# S311 warns that a pseudo-random generator is unsuitable for cryptographic use.
+# In the simulator there is nothing to protect and reproducibility is the
+# requirement (`MASTERPLAN.md` §3.5): the output must be identical for a given
+# seed on every machine and every run. A CSPRNG would be the wrong tool, since
+# its output depends on OS entropy and could not be regenerated.
+"services/simulator/**" = ["S311"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["api"]
+known-first-party = ["api", "simulator"]
 
 # ===========================================================================
 # mypy
 # ===========================================================================
 [tool.mypy]
 python_version = "3.12"
-mypy_path = "apps/api/src"
-files = ["apps/api/src", "apps/api/tests"]
+mypy_path = ["apps/api/src", "services/simulator/src"]
+# Both services must be listed. `uv run mypy` with no arguments uses `files`, so
+# a member missing from here is never type-checked and CI still passes — a
+# silent gap rather than a failing build.
+files = [
+    "apps/api/src",
+    "apps/api/tests",
+    "services/simulator/src",
+]
 strict = true
 warn_unreachable = true
 plugins = ["pydantic.mypy"]
@@ -87,7 +103,7 @@ plugins = ["pydantic.mypy"]
 # still type-checked so hand-written fakes are validated against the real
 # repository Protocols.
 [[tool.mypy.overrides]]
-module = ["tests.*"]
+module = ["tests.*", "simulator.tests.*"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false
 disallow_any_generics = false
@@ -96,12 +112,28 @@ disallow_any_generics = false
 module = ["alembic.*"]
 ignore_missing_imports = true
 
+# pyarrow ships neither type stubs nor a `py.typed` marker, so mypy cannot
+# analyse it. This is the available option short of adding a stub package as a
+# dependency; the Parquet sinks are covered by round-trip tests instead, which
+# check behaviour rather than annotations.
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
 # ===========================================================================
 # pytest
 # ===========================================================================
 [tool.pytest.ini_options]
-testpaths = ["apps/api/tests"]
-pythonpath = ["apps/api/src"]
+# Both services must be listed. `uv run pytest` uses `testpaths`, so a member
+# missing from here has its tests silently not collected — CI reports green
+# having run nothing.
+#
+# The simulator's tests live inside its package rather than in a sibling
+# `tests/` directory. Two directories both named `tests` would produce two
+# modules named `tests.conftest`, which pytest's default import mode rejects as
+# an import-file mismatch. `simulator.tests.*` cannot collide with anything.
+testpaths = ["apps/api/tests", "services/simulator/src/simulator/tests"]
+pythonpath = ["apps/api/src", "services/simulator/src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 # The default run is offline: `postgres`-marked tests deselect unless the
@@ -118,7 +150,7 @@ log_cli_level = "WARNING"
 # This is where the architecture stops being a convention and becomes a gate.
 # ===========================================================================
 [tool.importlinter]
-root_packages = ["api"]
+root_packages = ["api", "simulator"]
 # Required so the forbidden contracts below can name third-party packages.
 include_external_packages = true
 
@@ -202,3 +234,30 @@ forbidden_modules = [
     "sqlalchemy",
 ]
 allow_indirect_imports = true
+
+# --- Simulator layering ----------------------------------------------------
+#   cli             -> the composition point; the only module naming a sink
+#   infrastructure | application -> siblings; both depend only on the domain
+#   domain          -> the simulation model, depending on nothing
+[[tool.importlinter.contracts]]
+name = "Simulator layer dependency direction"
+type = "layers"
+layers = [
+    "simulator.cli",
+    "simulator.infrastructure | simulator.application",
+    "simulator.domain",
+]
+
+# The simulation model must stay pure. `random` and `math` are standard library
+# and allowed; a plotting library, a dataframe library, or a sink creeping in
+# would make the model depend on where its output happens to go.
+[[tool.importlinter.contracts]]
+name = "Simulator domain is self-contained"
+type = "forbidden"
+source_modules = ["simulator.domain"]
+forbidden_modules = [
+    "pyarrow",
+    "simulator.application",
+    "simulator.cli",
+    "simulator.infrastructure",
+]
