@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format, lint, types, architecture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --all-packages
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy
+
+      # Enforces the layer contracts declared in the root pyproject.toml.
+      # The same rules are asserted in tests/unit/architecture, so they fail
+      # the ordinary test run as well as this step.
+      - name: Check architecture contracts
+        run: uv run lint-imports
+
+  test:
+    name: Tests (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --all-packages
+
+      # No database, no credentials, no network: the default tier runs on
+      # in-memory SQLite, and `postgres`-marked tests deselect themselves.
+      - name: Run tests
+        run: uv run pytest
+
+  postgres:
+    name: Tests (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: predictive_maintenance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/predictive_maintenance_test
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/predictive_maintenance_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --all-packages
+
+      - name: Apply migrations
+        run: uv run alembic -c apps/api/alembic.ini upgrade head
+
+      # Fails when the models and the migrations have drifted apart. This is
+      # what makes the separate persistence models safe: the duplication
+      # between domain entities and ORM models is caught here rather than
+      # discovered as a runtime error.
+      - name: Check for model/migration drift
+        run: uv run alembic -c apps/api/alembic.ini check
+
+      # Exercises the paths SQLite cannot emulate: ON CONFLICT ... RETURNING,
+      # CHECK constraints, timestamptz semantics, and the epoch bucketing SQL.
+      - name: Run PostgreSQL tests
+        run: uv run pytest -m postgres

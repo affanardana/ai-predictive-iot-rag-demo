@@ -1,0 +1,61 @@
+# All the document regarding specification set (spec-driven development) must be local-only, never published
+spec_driven_development/
+
+# Dummy pdf(s) for RAG
+dummy_pdfs/
+
+# The detailed working README. `README.md` is the short version shown on the
+# repository page; this one is the full reference for whoever is working in the
+# repository, and is not published.
+README.full.md
+
+# --- Secrets ---------------------------------------------------------------
+# Never commit real credentials. `.env.example` is the committed template.
+.env
+.env.*
+!.env.example
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Tooling caches --------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Local scratch (SQLite files, dumps, ad-hoc exports) -------------------
+.local/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- ML artefacts (Phase 3+) ----------------------------------------------
+mlruns/
+mlartifacts/
+data/
+!data/.gitkeep
+
+# --- Frontend (Phase 7+) ---------------------------------------------------
+node_modules/
+.vite/
+*.tsbuildinfo
+
+# --- Editors / OS ----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

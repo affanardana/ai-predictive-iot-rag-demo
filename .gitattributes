@@ -1,0 +1,15 @@
+# Normalise line endings so Windows development does not produce spurious
+# diffs against Linux CI (ruff format --check is the usual casualty).
+* text=auto eol=lf
+
+# Binary files must never be normalised.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Lockfile: keep it intact and out of merge conflict resolution.
+uv.lock text eol=lf merge=union

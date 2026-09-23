@@ -1,0 +1,204 @@
+[project]
+name = "ai-predictive-maintenance"
+version = "0.2.0"
+description = "AI Predictive Maintenance & Maintenance Copilot for industrial electric motors"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+# The workspace root is a virtual project: it is not built or published, it
+# only anchors the workspace and holds shared tool configuration.
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+# Only `apps/api` is a member in Phase 1. `services/simulator/` and `ml/` are
+# added here when they gain real dependencies, so we never carry empty stub
+# projects through `uv sync`.
+members = ["apps/api"]
+
+# Dev tooling is shared across every workspace member.
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "import-linter>=2.1",
+    "httpx>=0.28",
+    "aiosqlite>=0.20",
+]
+
+# ===========================================================================
+# ruff
+# ===========================================================================
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["apps/api/src", "apps/api/tests"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "ANN", # flake8-annotations
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "D",   # pydocstyle
+    "S",   # flake8-bandit
+    "RUF", # ruff-specific
+]
+ignore = [
+    "D203", # conflicts with D211 (blank line before class docstring)
+    "D213", # conflicts with D212 (multi-line summary position)
+    "D107", # docstring on __init__: the coding standards require class
+            # docstrings, not constructor docstrings, and a docstring that
+            # restates three assignments adds noise rather than clarity.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "ANN001", "ANN201", "ANN202", "D103"]
+"**/migrations/**" = ["D", "ANN", "E501", "S105"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["api"]
+
+# ===========================================================================
+# mypy
+# ===========================================================================
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "apps/api/src"
+files = ["apps/api/src", "apps/api/tests"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+# Tests are allowed to be less pedantic than production code, but they are
+# still type-checked so hand-written fakes are validated against the real
+# repository Protocols.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+module = ["alembic.*"]
+ignore_missing_imports = true
+
+# ===========================================================================
+# pytest
+# ===========================================================================
+[tool.pytest.ini_options]
+testpaths = ["apps/api/tests"]
+pythonpath = ["apps/api/src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# The default run is offline: `postgres`-marked tests deselect unless the
+# caller passes `-m postgres` explicitly (a later `-m` wins over this one).
+addopts = "-m 'not postgres' --strict-markers --strict-config"
+markers = [
+    "postgres: requires a live PostgreSQL database; set TEST_DATABASE_URL to run",
+]
+log_cli_level = "WARNING"
+
+# ===========================================================================
+# import-linter
+#
+# This is where the architecture stops being a convention and becomes a gate.
+# ===========================================================================
+[tool.importlinter]
+root_packages = ["api"]
+# Required so the forbidden contracts below can name third-party packages.
+include_external_packages = true
+
+# --- Layer direction -------------------------------------------------------
+# Higher layers may import lower ones; never the reverse.
+#   main         -> entrypoint, wires everything together
+#   presentation -> HTTP only; may see the composition root, never infra
+#   composition  -> the sole place that knows concrete adapters
+#   application | infrastructure -> siblings, both depend only on domain
+#   domain       -> depends on nothing
+[[tool.importlinter.contracts]]
+name = "Layer dependency direction"
+type = "layers"
+layers = [
+    "api.main",
+    "api.presentation",
+    "api.composition",
+    "api.infrastructure | api.application",
+    "api.domain",
+    # A shared kernel, sitting below even the domain. The request identifier is
+    # written by presentation middleware and read by infrastructure's log
+    # formatter, so neither layer may own it and neither may import the other.
+    # Placed lowest, it can import nothing from `api` while staying importable
+    # by everything above it.
+    "api.request_context",
+]
+
+# --- Domain purity ---------------------------------------------------------
+# CODING_STANDARDS.md: the Domain layer must never import a framework.
+[[tool.importlinter.contracts]]
+name = "Domain is framework-free"
+type = "forbidden"
+source_modules = ["api.domain"]
+forbidden_modules = [
+    "alembic",
+    "fastapi",
+    "httpx",
+    "numpy",
+    "pandas",
+    "psycopg",
+    "pydantic",
+    "pydantic_settings",
+    "sqlalchemy",
+    "torch",
+    "uvicorn",
+]
+
+# --- Application purity ----------------------------------------------------
+# Application orchestrates through domain ports. It must not reach for a
+# database driver, a web framework, or configuration plumbing.
+[[tool.importlinter.contracts]]
+name = "Application depends only on domain"
+type = "forbidden"
+source_modules = ["api.application"]
+forbidden_modules = [
+    "api.infrastructure",
+    "api.presentation",
+    "alembic",
+    "fastapi",
+    "psycopg",
+    "pydantic_settings",
+    "sqlalchemy",
+]
+
+# --- Presentation must not touch persistence -------------------------------
+# Indirect imports are permitted, so presentation can receive the wired
+# container from the composition root. That indirection is the entire point of
+# having a composition root, and forbidding it would put this contract in direct
+# conflict with the layers contract above. What remains forbidden is
+# presentation reaching an adapter *directly* -- the coupling that actually
+# hurts, and the one that would make the HTTP layer untestable without a
+# database.
+[[tool.importlinter.contracts]]
+name = "Presentation does not import infrastructure"
+type = "forbidden"
+source_modules = ["api.presentation"]
+forbidden_modules = [
+    "api.infrastructure",
+    "alembic",
+    "psycopg",
+    "sqlalchemy",
+]
+allow_indirect_imports = true
