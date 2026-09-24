@@ -25,6 +25,49 @@ steps are separate because labelling, splitting and normalisation are decisions
 about *training* that can be revisited without regenerating the telemetry
 underneath them.
 
+## Results
+
+Trained on Colab, one run, one seed. Every figure is measured on the same rows
+as the clock baseline.
+
+```text
+test                    avg precision   roc auc   partial auc   brier   recall@p80
+  lstm                          0.848     0.992         0.918   0.017        72.9%
+  clock_baseline                0.160     0.836         0.547   0.043         0.0%
+
+test_shift              avg precision   roc auc   partial auc   brier   recall@p80
+  lstm                          0.691     0.985         0.852   0.030        28.5%
+  clock_baseline                0.030     0.328         0.487   0.048         0.0%
+  prevalence                    4.38%
+```
+
+**`test_shift` is the row that answers the question the phase was built
+around.** Those machines run 6- and 48-hour lives, outside the 16-32 hour range
+everything else uses. A model that had learned the training regime's timing
+would collapse there; the clock baseline does, scoring 0.030 against a 4.38%
+prevalence — worse than chance. The LSTM scores 0.691, twenty-three times the
+floor, and holds across all twelve machines (min 0.651, median 0.870).
+
+Degrading from 0.848 to 0.691 across an eightfold change in life length is the
+signature of a model reading signals.
+
+At the product's own bands on `test`: at 0.80 (CRITICAL) precision 0.820 and
+recall 0.674, flagging 4.04% of windows against a 4.92% base rate. Lead time
+over detected failures: median 62 minutes, IQR 45-82, 95.7% detection, zero
+false alarms per machine-day.
+
+Two things the report shows that are worth reading rather than skimming past:
+
+- **The per-machine average precisions (0.956-0.996) all exceed the pooled
+  0.848.** Within a machine the ranking is near-perfect; pooled across fifteen
+  it is not. The scores are therefore not comparable *between* machines, and
+  since PRD §9 applies one global set of bands, that is a real operational
+  limitation rather than a curiosity. Per-machine calibration is the obvious
+  next step.
+- **It is one seed.** The floor is a deterministic number, so strictly a 5.3x
+  margin over a single run cannot be separated from a lucky initialisation. At
+  that distance luck is unlikely, but a second seed would settle it.
+
 ## Training is an extra, not a dependency
 
 ```bash

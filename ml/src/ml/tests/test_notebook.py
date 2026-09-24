@@ -67,8 +67,12 @@ def test_the_notebook_imports_no_torch() -> None:
 
 
 def test_the_notebook_computes_no_metrics() -> None:
-    """Every number it prints comes from `ml model evaluate`."""
-    forbidden = ("precision", "recall", "roc_auc", "np.", "numpy", "sklearn")
+    """Every number it prints comes from `ml model evaluate`.
+
+    `np.` rather than `numpy`: a bare `import numpy` for a version banner is
+    orchestration, but any *arithmetic* through it is the thing being banned.
+    """
+    forbidden = ("precision", "recall", "roc_auc", "np.", "sklearn")
 
     for index, cell in enumerate(_cells()):
         if cell["cell_type"] != "code":

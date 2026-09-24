@@ -13,7 +13,7 @@ README.full.md
 # Never commit real credentials. `.env.example` is the committed template.
 .env
 .env.*
-!.env.example
+.env.example
 
 # --- Python ----------------------------------------------------------------
 __pycache__/
@@ -58,6 +58,17 @@ data/
 *.pth
 ml/notebooks/.ipynb_checkpoints/
 
+# The Colab run's outputs: the downloaded checkpoint and the raw reports.
+#
+# The leading slash matters. A bare `colab_report/` would match at any depth,
+# and a bare `model/` matches any directory of that name -- including
+# `ml/src/ml/model/`, the torch source package -- silently, and only in a
+# commit, which is the hardest place to notice it.
+#
+# The results that matter are written up in `ml/README.md` and the CHANGELOG, so
+# these are working copies rather than the record.
+/colab_report/
+
 # --- Frontend (Phase 7+) ---------------------------------------------------
 node_modules/
 .vite/
@@ -68,4 +79,3 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
-
