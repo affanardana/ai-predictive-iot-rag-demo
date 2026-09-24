@@ -48,6 +48,16 @@ mlartifacts/
 data/
 !data/.gitkeep
 
+# Model checkpoints. `data/models/` would cover the default output location
+# already, via `data/` above, but a checkpoint is the kind of file that gets
+# copied somewhere convenient and committed by reflex. The run manifest beside
+# it is what should travel: it carries the config, seeds, git SHA and dataset
+# fingerprint, so a checkpoint is regenerable rather than precious.
+*.pt
+*.ckpt
+*.pth
+ml/notebooks/.ipynb_checkpoints/
+
 # --- Frontend (Phase 7+) ---------------------------------------------------
 node_modules/
 .vite/

@@ -1,0 +1,42 @@
+[project]
+name = "ml"
+version = "0.1.0"
+description = "Dataset engineering for the AI Predictive Maintenance platform"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # The generator is the source of the data, so this is a real dependency and
+    # not a convenience: a change to the physics has to move the dataset with it.
+    "simulator",
+    "numpy>=2.1",
+    "pyarrow>=18.0",
+]
+
+# Training is an extra, not a core dependency, and the reason is structural
+# rather than about download size. `uv sync --locked --all-packages` installs the
+# union of every member's dependencies, so a core torch would land in the API's
+# environment and in all three CI jobs — including the postgres job that has
+# nothing to do with machine learning. It would also put torch behind
+# `import ml.dataset.windows`, which is exactly what the dependency-free
+# contract exists to prevent.
+#
+# The extra is the dependency-level analogue of the `postgres` marker: an
+# opt-in capability, opted out of by default. `ml.evaluation` and
+# `ml.experiment` are built to run without it, so the metrics that document the
+# model can be recomputed on a machine that has never installed torch.
+[project.optional-dependencies]
+train = ["torch>=2.6"]
+
+# `ml` is the first workspace member to depend on another. Without this, uv
+# treats `simulator` as a PyPI package name and fails at lock time; with it, the
+# dependency resolves to the sibling member, so the two always build together
+# and a change to the physics cannot be picked up without the dataset moving
+# with it.
+[tool.uv.sources]
+simulator = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ml"]

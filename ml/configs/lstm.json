@@ -1,0 +1,19 @@
+{
+  "batch_size": 512,
+  "device": "cuda",
+  "dropout": 0.2,
+  "gradient_clip": 1.0,
+  "hidden_size": 128,
+  "horizon": 60,
+  "layers": 2,
+  "learning_rate": 0.001,
+  "max_epochs": 60,
+  "num_workers": 2,
+  "patience": 8,
+  "positive_repeats": 3.0,
+  "seed": 20260923,
+  "target_positive_rate": 0.2,
+  "validation_probe_per_life": 60,
+  "weight_decay": 1e-05,
+  "window": 60
+}

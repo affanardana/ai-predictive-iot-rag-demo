@@ -12,9 +12,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-# `ml/` joins when it gains real dependencies, so we never carry an empty stub
-# project through `uv sync`.
-members = ["apps/api", "services/simulator"]
+members = ["apps/api", "services/simulator", "ml"]
 
 # Dev tooling is shared across every workspace member.
 [dependency-groups]
@@ -38,8 +36,13 @@ src = [
     "apps/api/src",
     "apps/api/tests",
     "services/simulator/src",
+    "ml/src",
 ]
-extend-exclude = ["migrations/versions"]
+# `ml/notebooks` is excluded because ruff lints `.ipynb` files by default
+# (0.6.0 onwards), and the Colab notebook is orchestration rather than code.
+# Its thinness is enforced by a test that parses the notebook JSON, which is a
+# stricter check than a linter would give it.
+extend-exclude = ["migrations/versions", "ml/notebooks"]
 
 [tool.ruff.lint]
 select = [
@@ -66,34 +69,40 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "ANN001", "ANN201", "ANN202", "D103"]
+"**/tests/**" = ["S101", "ANN001", "ANN201", "ANN202", "D102", "D103"]
 "**/migrations/**" = ["D", "ANN", "E501", "S105"]
 # S311 warns that a pseudo-random generator is unsuitable for cryptographic use.
 # In the simulator there is nothing to protect and reproducibility is the
 # requirement (`MASTERPLAN.md` §3.5): the output must be identical for a given
 # seed on every machine and every run. A CSPRNG would be the wrong tool, since
 # its output depends on OS entropy and could not be regenerated.
+#
+# `ml` composes the fleet's timelines, so it draws from the same generators for
+# the same reason — a life's length and scenario have to be regenerable from the
+# plan, and nothing here is a secret.
 "services/simulator/**" = ["S311"]
+"ml/**" = ["S311"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "simulator"]
+known-first-party = ["api", "ml", "simulator"]
 
 # ===========================================================================
 # mypy
 # ===========================================================================
 [tool.mypy]
 python_version = "3.12"
-mypy_path = ["apps/api/src", "services/simulator/src"]
-# Both services must be listed. `uv run mypy` with no arguments uses `files`, so
-# a member missing from here is never type-checked and CI still passes — a
-# silent gap rather than a failing build.
+mypy_path = ["apps/api/src", "services/simulator/src", "ml/src"]
+# Every workspace member must be listed. `uv run mypy` with no arguments uses
+# `files`, so a member missing from here is never type-checked and CI still
+# passes — a silent gap rather than a failing build.
 files = [
     "apps/api/src",
     "apps/api/tests",
     "services/simulator/src",
+    "ml/src",
 ]
 strict = true
 warn_unreachable = true
@@ -103,7 +112,7 @@ plugins = ["pydantic.mypy"]
 # still type-checked so hand-written fakes are validated against the real
 # repository Protocols.
 [[tool.mypy.overrides]]
-module = ["tests.*", "simulator.tests.*"]
+module = ["tests.*", "simulator.tests.*", "ml.tests.*"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false
 disallow_any_generics = false
@@ -120,6 +129,15 @@ ignore_missing_imports = true
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
+# torch is an optional extra, so it is absent from the default environment
+# entirely. Without this override `uv run mypy` fails with "cannot find
+# implementation or library stub" in exactly the environment the rest of the
+# package is meant to be checked in. Same reasoning as pyarrow above, with the
+# added twist that the module is legitimately not installed.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
 # ===========================================================================
 # pytest
 # ===========================================================================
@@ -132,15 +150,26 @@ ignore_missing_imports = true
 # `tests/` directory. Two directories both named `tests` would produce two
 # modules named `tests.conftest`, which pytest's default import mode rejects as
 # an import-file mismatch. `simulator.tests.*` cannot collide with anything.
-testpaths = ["apps/api/tests", "services/simulator/src/simulator/tests"]
-pythonpath = ["apps/api/src", "services/simulator/src"]
+testpaths = [
+    "apps/api/tests",
+    "services/simulator/src/simulator/tests",
+    "ml/src/ml/tests",
+]
+pythonpath = ["apps/api/src", "services/simulator/src", "ml/src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-# The default run is offline: `postgres`-marked tests deselect unless the
-# caller passes `-m postgres` explicitly (a later `-m` wins over this one).
-addopts = "-m 'not postgres' --strict-markers --strict-config"
+# The default run is offline and torch-free: `postgres`- and `torch`-marked
+# tests deselect unless the caller asks for them explicitly (a later `-m` wins
+# over this one).
+#
+# `torch` has to be named here and not merely declared in `markers`. A marker
+# alone only lets a test be *selected*; with `-m 'not postgres'` still in force,
+# the torch tests would be collected and run in the default offline job, where
+# torch is not installed, and would fail rather than deselect.
+addopts = "-m 'not postgres and not torch' --strict-markers --strict-config"
 markers = [
     "postgres: requires a live PostgreSQL database; set TEST_DATABASE_URL to run",
+    "torch: requires the training extra (`uv sync --all-packages --all-extras`)",
 ]
 log_cli_level = "WARNING"
 
@@ -150,7 +179,7 @@ log_cli_level = "WARNING"
 # This is where the architecture stops being a convention and becomes a gate.
 # ===========================================================================
 [tool.importlinter]
-root_packages = ["api", "simulator"]
+root_packages = ["api", "ml", "simulator"]
 # Required so the forbidden contracts below can name third-party packages.
 include_external_packages = true
 
@@ -251,6 +280,75 @@ layers = [
 # The simulation model must stay pure. `random` and `math` are standard library
 # and allowed; a plotting library, a dataframe library, or a sink creeping in
 # would make the model depend on where its output happens to go.
+# --- `ml` is a separate deployable -----------------------------------------
+# `ml` runs on Colab or Modal, not beside the API. Dragging FastAPI, SQLAlchemy
+# and psycopg into a training environment to compute a column mean would be
+# absurd, and an accidental import is exactly how it happens — a convenience
+# helper reused once, and the training image silently grows a web stack.
+[[tool.importlinter.contracts]]
+name = "The ML package does not depend on the API"
+type = "forbidden"
+source_modules = ["ml"]
+forbidden_modules = [
+    "api",
+    "alembic",
+    "fastapi",
+    "psycopg",
+    "pydantic_settings",
+    "sqlalchemy",
+    "uvicorn",
+]
+
+# The rules that decide what a training row *is* — which columns are features,
+# where a life begins and ends, and which label a timestep carries — are pure
+# decisions about the problem. Keeping them free of numpy and pyarrow means they
+# can be read, reasoned about, and tested without a data stack in the room, and
+# that a missing `uv sync` cannot make the important half of the package
+# unimportable.
+[[tool.importlinter.contracts]]
+name = "The labelling core is dependency-free"
+type = "forbidden"
+source_modules = [
+    "ml.dataset.errors",
+    "ml.dataset.features",
+    "ml.dataset.labelling",
+    "ml.dataset.lives",
+    "ml.dataset.plan",
+    "ml.dataset.splits",
+    "ml.dataset.windows",
+]
+forbidden_modules = ["numpy", "pyarrow"]
+
+# The contract that makes Phase 4 verifiable at all. Training runs on a GPU
+# somewhere else, so the rule is that everything deciding whether a published
+# number is trustworthy — the window index and its labels, the sampler's draw,
+# the run config, the manifest, and the stored predictions — must run without
+# torch installed. What is left in `ml.model` is a thin adapter over arrays that
+# were built and tested elsewhere.
+#
+# Enforced rather than intended, because the failure is silent and pleasant: an
+# import added for convenience makes the evaluation half quietly unusable on the
+# machine that is supposed to reproduce it.
+[[tool.importlinter.contracts]]
+name = "The evaluation and experiment cores do not depend on torch"
+type = "forbidden"
+source_modules = ["ml.evaluation", "ml.experiment"]
+forbidden_modules = ["ml.model", "torch"]
+
+# Phase 3 has to keep working in an environment that has never heard of
+# Phase 4 — `ml dataset report` is the command that states the dataset's own
+# difficulty, and it must not acquire a dependency on a model it does not have.
+[[tool.importlinter.contracts]]
+name = "The dataset package does not depend on the model"
+type = "forbidden"
+source_modules = ["ml.dataset"]
+forbidden_modules = [
+    "ml.evaluation",
+    "ml.experiment",
+    "ml.model",
+    "torch",
+]
+
 [[tool.importlinter.contracts]]
 name = "Simulator domain is self-contained"
 type = "forbidden"
