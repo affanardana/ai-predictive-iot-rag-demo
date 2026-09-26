@@ -104,7 +104,32 @@ not render ECharts or snapshot markup. End-to-end testing is Phase 11's, per
 
 ## Deploying
 
-Vercel, with the root directory set to `apps/web`. One environment variable:
+**Vercel project settings:**
+
+- **Root Directory: `apps/web`.** Not optional, and the first thing to check if a
+  deploy fails oddly. Left at the repository root, Vercel runs framework
+  detection there, finds the `pyproject.toml` at the top of the repo, decides
+  the project is a FastAPI application, and offers to deploy the *backend* —
+  which lives on the VPS and is not what is being hosted here.
+- **Framework Preset: Vite**, Build Command `npm run build`, Output `dist`.
+  All three are detected once the root directory is right.
+- **Environment variable `VITE_API_BASE_URL`**, set for Production *before* the
+  first build. Vite inlines it at build time, so it can be neither changed nor
+  added without a redeploy.
+
+`vercel.json` holds one SPA rewrite, so `/machines/M003` works when pasted into
+a fresh tab instead of 404ing. Vercel applies rewrites **after** filesystem
+matching, so `/assets/*` still resolves to real files. The file is deliberately
+minimal: Vercel validates it against a strict schema that rejects unknown keys,
+including a `//` key used as a comment — and JSON has no comment syntax anyway.
+
+The build runs `tsc --noEmit && vite build`, so a type error fails the deploy
+rather than shipping. That works because `src/api/schema.d.ts` is **committed**
+rather than generated at build time, which means Vercel needs no Python
+toolchain and no access to the API. `apps/api/tests`' CI drift check is what
+keeps that file honest.
+
+One environment variable:
 
 ```
 VITE_API_BASE_URL = https://pdm-api.72-61-214-194.sslip.io

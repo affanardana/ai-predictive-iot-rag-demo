@@ -1,10 +1,3 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    {
-      "//": "Every unmatched path serves the shell, so /machines/M003 works when pasted into a fresh tab instead of 404ing. Vercel applies rewrites after filesystem matching, so /assets/* still resolves to real files.",
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
