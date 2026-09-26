@@ -20,24 +20,50 @@ const PIPELINE = [
 ] as const
 
 export function AboutPanel() {
-  const [open, setOpen] = useState(false)
+  // Open on arrival, and collapsed only by choice.
+  //
+  // It used to start closed with a bare `+` on the right, which failed twice
+  // over: a reader could not tell it was a control, and the one person it exists
+  // for -- a reviewer arriving cold, who MASTERPLAN section 27 says must
+  // understand the project without the developer explaining it -- was the one
+  // who would never open it.
+  const [open, setOpen] = useState(true)
 
   return (
     <section className="rounded-lg border border-line bg-surface">
+      {/* The whole header is the click target -- a large one, which matters on
+          a touch screen -- while the control on the right is what *looks*
+          clickable. Styling only the text as a button would leave a small
+          target; styling only the header as one, as it was, leaves something
+          that reads as a heading because it is rendered exactly like every
+          other panel title on the page.
+
+          `cursor-pointer` is not decoration: Tailwind v4's preflight no longer
+          sets it on buttons, so without this the pointer never changes and the
+          control feels inert even to someone who has decided to click it. */}
       <button
         type="button"
         onClick={() => setOpen((previous) => !previous)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between px-4 py-3 text-left"
+        aria-controls="about-demonstration"
+        className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-4 py-3 text-left hover:bg-canvas"
       >
-        <span className="text-sm font-medium">About this demonstration</span>
-        <span aria-hidden="true" className="text-ink-muted">
-          {open ? '−' : '+'}
+        <span className="flex items-center gap-2">
+          <span
+            aria-hidden="true"
+            className={`text-xs text-accent transition-transform ${open ? 'rotate-90' : ''}`}
+          >
+            ▶
+          </span>
+          <span className="text-sm font-medium">About this demonstration</span>
+        </span>
+        <span className="rounded border border-line px-2 py-0.5 text-xs text-ink-muted">
+          {open ? 'Hide' : 'Show'}
         </span>
       </button>
 
       {open && (
-        <div className="border-t border-line px-4 py-4 text-sm">
+        <div id="about-demonstration" className="border-t border-line px-4 py-4 text-sm">
           <p className="text-ink-muted">
             A simulated fleet of industrial motors. Telemetry flows through a real pipeline and a
             trained model scores each machine continuously; nothing on this page is mock data.
