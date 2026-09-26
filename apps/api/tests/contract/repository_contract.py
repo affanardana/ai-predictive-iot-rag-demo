@@ -281,8 +281,17 @@ class TelemetryRepositoryContract:
 
         A fleet with no registered machines is the ordinary state on a fresh
         deployment, so it must not be a query the adapter cannot run.
+
+        The machine is registered even though nothing is asked about it, and
+        that is not tidiness: SQLite does not enforce foreign keys by default
+        while PostgreSQL does, so the orphan row this test used to write passed
+        the SQLite tier and failed the PostgreSQL one with a translated
+        integrity error. The store has to hold *something* for the assertion to
+        mean anything, and on one of the two dialects it can only hold a row
+        whose machine exists.
         """
         async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
             await uow.telemetry.add_many_idempotent([make_telemetry(event_id="orphan")])
 
         async with uow_factory() as uow:
@@ -775,8 +784,14 @@ class PredictionRepositoryContract:
     async def test_latest_for_many_is_empty_for_an_empty_request(
         self, uow_factory: UnitOfWorkFactory
     ) -> None:
-        """Being asked about nothing returns nothing, and does not error."""
+        """Being asked about nothing returns nothing, and does not error.
+
+        The machine is registered first so the store is non-empty on both
+        dialects -- see the telemetry case above for why an orphan row cannot
+        be used to make that point.
+        """
         async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
             await uow.predictions.add(make_prediction(prediction_id="orphan"))
 
         async with uow_factory() as uow:
@@ -982,8 +997,14 @@ class IncidentRepositoryContract:
     async def test_open_counts_is_empty_for_an_empty_request(
         self, uow_factory: UnitOfWorkFactory
     ) -> None:
-        """Being asked about nothing returns nothing, and does not error."""
+        """Being asked about nothing returns nothing, and does not error.
+
+        The machine is registered first so the store is non-empty on both
+        dialects -- see the telemetry case earlier in this file for why an
+        orphan row cannot be used to make that point.
+        """
         async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
             await uow.incidents.add(make_incident(incident_id="orphan"))
 
         async with uow_factory() as uow:
