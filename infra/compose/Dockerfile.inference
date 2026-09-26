@@ -47,7 +47,30 @@ RUN pip install --no-cache-dir \
         "uvicorn[standard]>=0.32" \
         "numpy>=2.1" \
         "pyarrow>=18.0" \
-        "httpx>=0.28"
+        "httpx>=0.28" \
+        "sentence-transformers>=3.3"
+
+# The two retrieval models, fetched at build time and baked in.
+#
+# Baked rather than pulled at first use, for two reasons. The service is on a
+# one-core box whose first request would otherwise pay for a 180 MB download;
+# and `HF_HUB_OFFLINE=1` below makes a missing model fail loudly at startup
+# rather than silently reaching for the network from a container that is meant
+# to be self-contained.
+#
+# `HF_HOME` is set before the download so the weights land in the image rather
+# than in a home directory that a later layer would not carry.
+ENV HF_HOME=/opt/models
+
+RUN python -c "\
+from sentence_transformers import CrossEncoder, SentenceTransformer; \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')"
+
+# Set after the download, never before: with it set, that layer would fail
+# rather than fetch. At runtime it is what turns a missing model into a
+# startup failure with a clear message.
+ENV HF_HUB_OFFLINE=1
 
 COPY ml/src/ml /app/src/ml
 COPY services/simulator/src/simulator /app/src/simulator

@@ -150,6 +150,81 @@ class InvalidIncidentTransitionError(DomainError):
         super().__init__(f"An incident in status '{current}' cannot transition to '{requested}'.")
 
 
+class KnowledgeDocumentNotFoundError(DomainError):
+    """No document carries this key and version.
+
+    `version=None` means "no version of this key at all", which is what
+    withdrawing a document asks for.
+    """
+
+    def __init__(self, document_key: str, version: str | None) -> None:
+        self.document_key = document_key
+        self.version = version
+        named = f"version '{version}'" if version is not None else "any version"
+        super().__init__(f"Document '{document_key}' was not found ({named}).")
+
+
+class DocumentContentConflictError(DomainError):
+    """This key and version already exist, with different content.
+
+    Refused rather than replaced: a version is a promise that version N is this
+    text, and silently re-writing it would make every citation recorded against
+    it resolve to something the reader never saw.
+    """
+
+    def __init__(self, document_key: str, version: str) -> None:
+        self.document_key = document_key
+        self.version = version
+        super().__init__(
+            f"Document '{document_key}' version '{version}' already exists with different "
+            "content. Bump the version, or re-ingest with replace enabled."
+        )
+
+
+class RetrievalUnavailableError(DomainError):
+    """Embedding or reranking could not be performed.
+
+    A dependency outage rather than a bad request: the query was well formed
+    and the corpus is stored, but the service that turns text into vectors did
+    not answer. Reported distinctly so a caller can retry instead of hunting
+    for a mistake in the request -- the same reasoning as
+    `PredictionUnavailableError`.
+    """
+
+
+class EmbeddingModelMismatchError(DomainError):
+    """The embedding service is not running the model the index was built with.
+
+    Refused rather than tolerated: vectors from two different models are not
+    comparable, so ranking across them would return plausible-looking nonsense
+    with nothing logged anywhere.
+    """
+
+    def __init__(self, expected: str, actual: str) -> None:
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"The embedding service is running '{actual}', but the corpus was embedded "
+            f"with '{expected}'. Re-embed the corpus or point the service at the right model."
+        )
+
+
+class ChunkTooLongError(DomainError):
+    """A chunk is longer than the embedding model will read.
+
+    Should be unreachable: the chunker caps chunk length. It is raised anyway,
+    because the embedder's failure mode is to truncate silently, and a chunk
+    embedded without its tail would be retrieved by words that are not in it.
+    """
+
+    def __init__(self, actual: int, limit: int) -> None:
+        self.actual = actual
+        self.limit = limit
+        super().__init__(
+            f"A chunk of {actual} characters exceeds the {limit}-character embedding limit."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Storage contract failures
 #

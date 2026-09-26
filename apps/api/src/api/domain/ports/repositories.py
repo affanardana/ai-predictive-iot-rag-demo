@@ -18,10 +18,13 @@ from datetime import datetime
 from typing import Protocol
 
 from api.domain.entities.incident import Incident
+from api.domain.entities.knowledge_document import KnowledgeChunk, KnowledgeDocument
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
 from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
+from api.domain.value_objects.chunk_match import ChunkMatch
+from api.domain.value_objects.document_category import DocumentCategory
 from api.domain.value_objects.incident_status import IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
@@ -287,5 +290,80 @@ class IncidentRepository(Protocol):
         to measure the length of the result, capped at 500 rows and fetching
         them all to count them. A machine with no open incidents is absent
         from the mapping; `dict.get(machine_id, 0)` is the intended reading.
+        """
+        ...
+
+
+class KnowledgeRepository(Protocol):
+    """Storage for the maintenance corpus: documents, versions, and chunks."""
+
+    async def add_document(self, document: KnowledgeDocument) -> None:
+        """Persist a document version."""
+        ...
+
+    async def get_document(self, document_key: str, version: str) -> KnowledgeDocument | None:
+        """Return one version of a document, or None if it was never ingested."""
+        ...
+
+    async def list_documents(self, limit: int) -> Sequence[KnowledgeDocument]:
+        """Return documents across every key, newest first."""
+        ...
+
+    async def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None:
+        """Persist a document's chunks."""
+        ...
+
+    async def replace_content(
+        self,
+        document: KnowledgeDocument,
+        chunks: Sequence[KnowledgeChunk],
+    ) -> None:
+        """Replace a version's stored content: its hash, page count and passages.
+
+        Only ever called for a version whose text changed, which the ingest use
+        case refuses unless the caller asked for it explicitly. The passages are
+        dropped and rewritten together, because a half-replaced version is a
+        document whose citations resolve to a mixture of two texts.
+        """
+        ...
+
+    async def chunks_for(self, document_id: str) -> Sequence[KnowledgeChunk]:
+        """Return a document's passages, in reading order.
+
+        The dialect-neutral way to read chunks back: it uses no vector operator,
+        so it works on every adapter, which is what lets one contract hold all
+        of them to the same storage behaviour. Ranking is `similar_chunks`.
+        """
+        ...
+
+    async def activate(self, document_key: str, version: str | None) -> None:
+        """Make one version of a document active, or withdraw the document.
+
+        At most one version of a key is active, so this deactivates the rest in
+        the same statement -- two statements would transiently break the partial
+        unique index. `version=None` withdraws the document entirely, which is
+        how a procedure is taken out of the evidence base.
+
+        Raises:
+            KnowledgeDocumentNotFoundError: no such key and version is stored.
+        """
+        ...
+
+    async def similar_chunks(
+        self,
+        embedding: Sequence[float],
+        *,
+        embedding_model: str,
+        limit: int,
+        category: DocumentCategory | None = None,
+    ) -> Sequence[ChunkMatch]:
+        """Return the chunks nearest this vector, closest first.
+
+        Only chunks of *active* documents are candidates, and only those
+        embedded by `embedding_model`: vectors from two models are not
+        comparable, and a superseded version must not be citable.
+
+        Raises:
+            NotImplementedError: on a dialect with no vector support.
         """
         ...

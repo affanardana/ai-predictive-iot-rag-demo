@@ -11,6 +11,7 @@ const NAVIGATION = [
   { to: '/machines', label: 'Machines' },
   { to: '/incidents', label: 'Incidents' },
   { to: '/simulation', label: 'Simulation' },
+  { to: '/knowledge', label: 'Knowledge' },
   { to: '/copilot', label: 'Copilot' },
 ] as const
 

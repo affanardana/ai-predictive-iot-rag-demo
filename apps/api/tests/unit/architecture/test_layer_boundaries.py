@@ -28,13 +28,20 @@ FRAMEWORK_ROOTS = frozenset(
         "httpx",
         "numpy",
         "pandas",
+        "pgvector",
         "psycopg",
         "pydantic",
         "pydantic_settings",
+        "pypdf",
         "sqlalchemy",
         "starlette",
         "torch",
         "uvicorn",
+        # Not a library the domain uses, but the check is about what the domain
+        # must never reach for: `pgvector` and `pypdf` are on this list because
+        # the vector type and the PDF parser are the two things Phase 9 added
+        # that could plausibly drift inward.
+        "sentence_transformers",
     }
 )
 

@@ -11,17 +11,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from api.domain.errors import (
+    ChunkTooLongError,
+    DocumentContentConflictError,
     DomainError,
     DomainValidationError,
+    EmbeddingModelMismatchError,
     IncidentNotFoundError,
     InsufficientTelemetryHistoryError,
     InvalidIncidentTransitionError,
     InvalidRunTransitionError,
     InvalidTelemetryError,
+    KnowledgeDocumentNotFoundError,
     MachineNotFoundError,
     PersistenceError,
     PredictionUnavailableError,
     RepositoryUnavailableError,
+    RetrievalUnavailableError,
     SimulationAlreadyRunningError,
     SimulationRunActiveError,
     SimulationRunNotFoundError,
@@ -61,6 +66,21 @@ ERROR_CATALOG: Mapping[type[DomainError], ErrorMapping] = {
     # nothing about what to do next.
     InsufficientTelemetryHistoryError: ErrorMapping(422, "insufficient_history"),
     DomainValidationError: ErrorMapping(422, "invalid_value"),
+    KnowledgeDocumentNotFoundError: ErrorMapping(404, "document_not_found"),
+    # A conflict rather than a validation error: the request was well formed and
+    # the version exists, but rewriting it would change what its citations
+    # resolve to. The caller's remedy is a version bump.
+    DocumentContentConflictError: ErrorMapping(409, "document_content_conflict"),
+    # A dependency outage for the same reason inference gets one: retryable, and
+    # not the caller's mistake. Covers both the embedding and the reranking
+    # service, since neither can carry out a retrieval on its own.
+    RetrievalUnavailableError: ErrorMapping(503, "retrieval_unavailable"),
+    # Not an outage: the service is up and running a model the corpus was not
+    # embedded with. 503 because the deployment has to change, not the request.
+    EmbeddingModelMismatchError: ErrorMapping(503, "embedding_model_mismatch"),
+    # Should be unreachable -- the chunker caps chunk length -- so a 500 is the
+    # honest answer: something is wrong with this service, not with the request.
+    ChunkTooLongError: ErrorMapping(500, "chunk_too_long"),
     RepositoryUnavailableError: ErrorMapping(503, "repository_unavailable"),
     # A dependency outage, not our fault and not the caller's. 503 says the
     # request was fine and the system could not answer, which is what lets a

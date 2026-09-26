@@ -16,14 +16,18 @@ from api.application.use_cases import (
     GetMachineDetail,
     GetPredictionHistory,
     GetTelemetryHistory,
+    IngestKnowledgeDocument,
     IngestTelemetry,
     ListIncidents,
+    ListKnowledgeDocuments,
     ListMachines,
     ListSimulations,
     RecordPrediction,
     RegisterMachine,
     ReportSimulationState,
     ResetSimulation,
+    SearchMaintenanceKnowledge,
+    SetActiveDocumentVersion,
     StartSimulation,
     StopSimulation,
     UpdateIncidentStatus,
@@ -111,6 +115,26 @@ def get_report_simulation_state(container: ContainerDep) -> ReportSimulationStat
     return container.report_simulation_state
 
 
+def get_list_knowledge_documents(container: ContainerDep) -> ListKnowledgeDocuments:
+    """Resolve the corpus listing use case."""
+    return container.list_knowledge_documents
+
+
+def get_ingest_knowledge_document(container: ContainerDep) -> IngestKnowledgeDocument:
+    """Resolve the document ingest use case."""
+    return container.ingest_knowledge_document
+
+
+def get_search_maintenance_knowledge(container: ContainerDep) -> SearchMaintenanceKnowledge:
+    """Resolve the retrieval use case."""
+    return container.search_maintenance_knowledge
+
+
+def get_set_active_document_version(container: ContainerDep) -> SetActiveDocumentVersion:
+    """Resolve the version activation use case."""
+    return container.set_active_document_version
+
+
 def get_event_subscriber(container: ContainerDep) -> EventSubscriber:
     """Resolve the event stream's subscriber half.
 
@@ -164,6 +188,16 @@ StartSimulationDep = Annotated[StartSimulation, Depends(get_start_simulation)]
 StopSimulationDep = Annotated[StopSimulation, Depends(get_stop_simulation)]
 ResetSimulationDep = Annotated[ResetSimulation, Depends(get_reset_simulation)]
 ReportSimulationStateDep = Annotated[ReportSimulationState, Depends(get_report_simulation_state)]
+ListKnowledgeDocumentsDep = Annotated[ListKnowledgeDocuments, Depends(get_list_knowledge_documents)]
+IngestKnowledgeDocumentDep = Annotated[
+    IngestKnowledgeDocument, Depends(get_ingest_knowledge_document)
+]
+SearchMaintenanceKnowledgeDep = Annotated[
+    SearchMaintenanceKnowledge, Depends(get_search_maintenance_knowledge)
+]
+SetActiveDocumentVersionDep = Annotated[
+    SetActiveDocumentVersion, Depends(get_set_active_document_version)
+]
 
 #: Declared on a router rather than per route, so a new write cannot be added
 #: to it and silently go unauthenticated.

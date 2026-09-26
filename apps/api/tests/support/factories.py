@@ -10,6 +10,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from api.domain.entities.incident import Incident
+from api.domain.entities.knowledge_document import (
+    EMBEDDING_DIMENSIONS,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import (
     DEFAULT_PREDICTION_HORIZON,
@@ -17,6 +22,7 @@ from api.domain.entities.prediction import (
 )
 from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
+from api.domain.value_objects.document_category import DocumentCategory
 from api.domain.value_objects.failure_probability import FailureProbability
 from api.domain.value_objects.incident_type import IncidentType
 from api.domain.value_objects.machine_id import MachineId
@@ -158,4 +164,67 @@ def make_incident(
         detected_at=detected_at or DEFAULT_NOW,
         incident_id=incident_id,
         prediction_id=prediction_id,
+    )
+
+
+#: The model identity a test's vectors are attributed to. Retrieval filters on
+#: it, so a test that wants a mismatch only has to pass another value.
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2@test"
+
+
+def make_embedding(first: float = 1.0, *rest: float) -> tuple[float, ...]:
+    """Build an embedding whose direction is easy to reason about.
+
+    `make_embedding(1.0)` points along the first axis and `make_embedding(0.0,
+    1.0)` along the second, so two vectors built this way are orthogonal and
+    their cosine similarity is exactly zero.
+    """
+    values = (first, *rest)
+    padding = (0.0,) * (EMBEDDING_DIMENSIONS - len(values))
+    return (*values, *padding)
+
+
+def make_knowledge_document(
+    document_key: str = "bearing-inspection-sop",
+    version: str = "1.4",
+    title: str = "Bearing Inspection SOP",
+    category: DocumentCategory = DocumentCategory.BEARING_INSPECTION,
+    is_active: bool = False,
+    content_hash: str = "0" * 64,
+    page_count: int = 2,
+    source_path: str = "dummy_pdfs/procedure/Bearing Inspection SOP.pdf",
+    ingested_at: datetime | None = None,
+) -> KnowledgeDocument:
+    """Build a maintenance document version."""
+    return KnowledgeDocument.create(
+        document_key=document_key,
+        title=title,
+        category=category,
+        version=version,
+        source_path=source_path,
+        content_hash=content_hash,
+        page_count=page_count,
+        ingested_at=ingested_at or DEFAULT_NOW,
+        is_active=is_active,
+    )
+
+
+def make_knowledge_chunk(
+    document_id: str = "doc-1",
+    chunk_index: int = 0,
+    section: str = "1. Purpose",
+    page: int = 1,
+    content: str = "Inspect the bearing housing for discoloured grease.",
+    embedding: tuple[float, ...] | None = None,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+) -> KnowledgeChunk:
+    """Build an embedded chunk."""
+    return KnowledgeChunk.create(
+        document_id=document_id,
+        chunk_index=chunk_index,
+        section=section,
+        page=page,
+        content=content,
+        embedding=embedding if embedding is not None else make_embedding(1.0),
+        embedding_model=embedding_model,
     )

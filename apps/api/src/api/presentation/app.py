@@ -16,6 +16,7 @@ from api.presentation.routers import (
     events_router,
     health_router,
     incidents_router,
+    knowledge_router,
     machines_router,
     simulations_router,
     telemetry_router,
@@ -99,6 +100,7 @@ def create_app(container: Container) -> FastAPI:
     app.include_router(incidents_router, prefix=API_V1_PREFIX)
     app.include_router(telemetry_router, prefix=API_V1_PREFIX)
     app.include_router(simulations_router, prefix=API_V1_PREFIX)
+    app.include_router(knowledge_router, prefix=API_V1_PREFIX)
     app.include_router(events_router, prefix=API_V1_PREFIX)
 
     return app

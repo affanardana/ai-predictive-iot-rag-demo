@@ -65,3 +65,44 @@ class PredictResponse(BaseModel):
 
     failure_probability: float = Field(ge=0.0, le=1.0)
     model_version: str
+
+
+class EmbedRequest(BaseModel):
+    """Texts to embed, in the order the caller wants them back."""
+
+    texts: list[str] = Field(default_factory=list)
+
+
+class EmbedResponse(BaseModel):
+    """The vectors, and the model that produced them.
+
+    `model` is echoed rather than assumed: the caller stores it with every
+    vector and refuses to compare vectors that came from a different one, so a
+    deployment that swapped models is caught at the first ingest rather than
+    showing up as poor ranking later.
+    """
+
+    model: str
+    dimensions: int
+    embeddings: list[list[float]]
+
+
+class RerankRequest(BaseModel):
+    """A query and the candidate passages to order against it."""
+
+    query: str
+    documents: list[str] = Field(default_factory=list)
+    limit: int = Field(default=5, ge=1, le=100)
+
+
+class RerankHit(BaseModel):
+    """One passage's score, and its position in the request."""
+
+    index: int = Field(ge=0)
+    score: float
+
+
+class RerankResponse(BaseModel):
+    """The candidates that scored highest, best first."""
+
+    results: list[RerankHit]

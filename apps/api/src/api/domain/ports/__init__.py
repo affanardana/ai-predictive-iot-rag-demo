@@ -9,6 +9,7 @@ application-layer signature and is therefore a one-way door.
 """
 
 from api.domain.ports.clock import Clock
+from api.domain.ports.embedder import Embedder
 from api.domain.ports.events import (
     EventKind,
     EventPublisher,
@@ -21,25 +22,31 @@ from api.domain.ports.events import (
 from api.domain.ports.health import HealthProbe, HealthStatus
 from api.domain.ports.repositories import (
     IncidentRepository,
+    KnowledgeRepository,
     MachineRepository,
     PredictionRepository,
     SimulationRunRepository,
     TelemetryRepository,
 )
+from api.domain.ports.reranker import Reranker, RerankResult
 from api.domain.ports.unit_of_work import UnitOfWork, UnitOfWorkFactory
 
 __all__ = [
     "Clock",
+    "Embedder",
     "EventKind",
     "EventPublisher",
     "EventSubscriber",
     "HealthProbe",
     "HealthStatus",
     "IncidentRepository",
+    "KnowledgeRepository",
     "MachineEvent",
     "MachineRepository",
     "NullEventPublisher",
     "PredictionRepository",
+    "RerankResult",
+    "Reranker",
     "SimulationRunRepository",
     "StreamItem",
     "StreamTick",

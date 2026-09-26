@@ -11,12 +11,22 @@ from collections.abc import Sequence
 
 from api.application.read_models import MachineDetail, MachineSummary, SimulationRunView
 from api.domain.entities.incident import Incident
+from api.domain.entities.knowledge_document import KnowledgeDocument
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.read_models import TelemetrySeries
+from api.domain.value_objects.chunk_match import ChunkMatch
+from api.domain.value_objects.citation import Citation
 from api.domain.value_objects.sensor_reading import SensorReading
+from api.domain.value_objects.text_line import TextLine
 from api.presentation.schemas.incident import IncidentSchema
+from api.presentation.schemas.knowledge import (
+    CitationSchema,
+    KnowledgeDocumentSchema,
+    KnowledgeMatchSchema,
+    TextLineSchema,
+)
 from api.presentation.schemas.machine import (
     MachineDetailSchema,
     MachineSchema,
@@ -181,3 +191,56 @@ def to_simulation_run(view: SimulationRunView) -> SimulationRunSchema:
 def to_simulation_run_list(views: Sequence[SimulationRunView]) -> list[SimulationRunSchema]:
     """Translate a sequence of runs."""
     return [to_simulation_run(view) for view in views]
+
+
+def to_text_line(schema: TextLineSchema) -> TextLine:
+    """Translate an incoming line into the domain's parser-to-chunker type."""
+    return TextLine(text=schema.text, page=schema.page, font_size=schema.font_size)
+
+
+def to_knowledge_document(document: KnowledgeDocument) -> KnowledgeDocumentSchema:
+    """Translate a stored document version."""
+    return KnowledgeDocumentSchema(
+        document_id=document.document_id,
+        document_key=document.document_key,
+        title=document.title,
+        category=document.category,
+        version=document.version,
+        is_active=document.is_active,
+        is_synthetic=document.is_synthetic,
+        page_count=document.page_count,
+        ingested_at=document.ingested_at,
+    )
+
+
+def to_knowledge_document_list(
+    documents: Sequence[KnowledgeDocument],
+) -> list[KnowledgeDocumentSchema]:
+    """Translate a sequence of document versions."""
+    return [to_knowledge_document(document) for document in documents]
+
+
+def to_citation(citation: Citation) -> CitationSchema:
+    """Translate a citation, rendering its display label once, here."""
+    return CitationSchema(
+        document_key=citation.document_key,
+        title=citation.title,
+        version=citation.version,
+        section=citation.section,
+        page=citation.page,
+        label=citation.label,
+    )
+
+
+def to_knowledge_match(match: ChunkMatch) -> KnowledgeMatchSchema:
+    """Translate one retrieved passage."""
+    return KnowledgeMatchSchema(
+        citation=to_citation(match.citation),
+        content=match.chunk.content,
+        score=match.score,
+    )
+
+
+def to_knowledge_match_list(matches: Sequence[ChunkMatch]) -> list[KnowledgeMatchSchema]:
+    """Translate a sequence of retrieved passages."""
+    return [to_knowledge_match(match) for match in matches]

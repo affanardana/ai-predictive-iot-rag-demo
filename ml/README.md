@@ -18,7 +18,20 @@ uv run python -m ml model train    --config ml/configs/lstm.json --out data/mode
 uv run python -m ml model predict  --run data/models/run-1 --split test
 uv run python -m ml model evaluate --predictions data/models/run-1/predictions_test.parquet
 uv run python -m ml model verify   --run data/models/run-1
+
+# the maintenance corpus (Phase 9). Needs the `knowledge` extra:
+#   uv sync --locked --all-packages --extra knowledge
+uv run python -m ml knowledge extract --document bearing-inspection-sop
+uv run python -m ml knowledge ingest  --api-url http://localhost:8100 --activate
+uv run python -m ml knowledge evaluate --api-url http://localhost:8100
 ```
+
+`knowledge extract` prints what a document parses into — every line with its
+page and font size — because the parse is the fragile half and the size is the
+only structure these PDFs carry. `ingest` sends the corpus to the API, which
+owns chunking, versioning and activation; re-running it over unchanged content
+writes nothing. `evaluate` measures retrieval against `knowledge/eval/`
+`questions.json` twice, with and without reranking, and prints both columns.
 
 `generate` is CPU-bound and takes a few minutes; everything else is faster. The
 steps are separate because labelling, splitting and normalisation are decisions
@@ -198,6 +211,13 @@ src/ml/experiment/   numpy + pyarrow, no torch
   sampling.py        the life-aware epoch draw
   predictions.py     the prediction table - the seam with evaluation
   manifest.py        dataset fingerprint, git revision, environment
+
+src/ml/knowledge/    the maintenance corpus, no torch
+  extraction.py      PDF to lines: page, text, and the size it was set at
+  corpus.py          the manifest, held against the directory it describes
+  ingest.py          parsing the corpus and posting it to the API
+  evaluation.py      recall, MRR, nDCG, abstention - and the measured run
+  errors.py          the error type, kept free of pypdf
 
 src/ml/model/        torch, the optional extra
   sequences.py       a Dataset that slices windows out of the flat artifact

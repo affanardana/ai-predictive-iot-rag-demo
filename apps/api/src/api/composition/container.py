@@ -18,24 +18,34 @@ from api.application.use_cases import (
     GetMachineDetail,
     GetPredictionHistory,
     GetTelemetryHistory,
+    IngestKnowledgeDocument,
     IngestTelemetry,
     ListIncidents,
+    ListKnowledgeDocuments,
     ListMachines,
     ListSimulations,
     RecordPrediction,
     RegisterMachine,
     ReportSimulationState,
     ResetSimulation,
+    SearchMaintenanceKnowledge,
+    SetActiveDocumentVersion,
     StartSimulation,
     StopSimulation,
     UpdateIncidentStatus,
 )
 from api.domain.entities.prediction import PREDICTION_WINDOW_READINGS
-from api.domain.errors import PredictionUnavailableError, SimulationUnavailableError
+from api.domain.errors import (
+    PredictionUnavailableError,
+    RetrievalUnavailableError,
+    SimulationUnavailableError,
+)
 from api.domain.ports.clock import Clock
+from api.domain.ports.embedder import Embedder
 from api.domain.ports.events import EventSubscriber
 from api.domain.ports.health import HealthProbe, HealthStatus
 from api.domain.ports.predictor import ModelOutput, Predictor
+from api.domain.ports.reranker import Reranker, RerankResult
 from api.domain.ports.simulation import SimulationController, SimulationPlan
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
 from api.domain.services.incident_policy import DefaultIncidentPolicy
@@ -43,11 +53,13 @@ from api.domain.services.risk_level_classifier import RiskLevelClassifier
 from api.domain.value_objects.risk_thresholds import RiskThresholds
 from api.domain.value_objects.sensor_reading import SensorReading
 from api.infrastructure.config import Settings
+from api.infrastructure.embedding import HttpEmbedder
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
 from api.infrastructure.persistence.sql.session import create_database_engine
 from api.infrastructure.persistence.sql.unit_of_work import SqlUnitOfWorkFactory
 from api.infrastructure.prediction import HttpPredictor
 from api.infrastructure.realtime import InProcessEventBroadcaster
+from api.infrastructure.reranking import HttpReranker
 from api.infrastructure.simulation import HttpSimulationController
 from api.infrastructure.system.database_health_probe import DatabaseHealthProbe
 from api.infrastructure.system.system_clock import SystemClock
@@ -86,6 +98,10 @@ class Container:
     stop_simulation: StopSimulation
     reset_simulation: ResetSimulation
     report_simulation_state: ReportSimulationState
+    list_knowledge_documents: ListKnowledgeDocuments
+    ingest_knowledge_document: IngestKnowledgeDocument
+    search_maintenance_knowledge: SearchMaintenanceKnowledge
+    set_active_document_version: SetActiveDocumentVersion
 
     #: Held for its `aclose`, which shuts down the HTTP client the simulation
     #: controller borrows. Present on both wirings, so the type is not optional
@@ -98,6 +114,9 @@ class Container:
     #: Present only when a broadcaster was built, so `aclose` has something to
     #: stop the keepalive timer on.
     broadcaster: InProcessEventBroadcaster | None = None
+    #: The client the retrieval adapters share. Held here rather than by either
+    #: adapter so the two use one connection pool and it is closed once.
+    inference_client: httpx.AsyncClient | None = None
 
     async def aclose(self) -> None:
         """Release resources held by the container.
@@ -109,6 +128,8 @@ class Container:
         if self.broadcaster is not None:
             await self.broadcaster.aclose()
         await self.simulation_controller.aclose()
+        if self.inference_client is not None:
+            await self.inference_client.aclose()
         if self.engine is not None:
             await self.engine.dispose()
 
@@ -123,19 +144,27 @@ def build_container(settings: Settings) -> Container:
     """
     engine = create_database_engine(settings.database_url)
     unit_of_work_factory = SqlUnitOfWorkFactory(engine)
+    # One client for every call to the inference service. Three adapters share
+    # the connection pool, and the container closes it once.
+    inference_client = httpx.AsyncClient()
 
     return _assemble(
         settings=settings,
         unit_of_work_factory=unit_of_work_factory,
         health_probe=DatabaseHealthProbe(unit_of_work_factory.session_factory),
-        predictor=HttpPredictor(
-            base_url=settings.inference_service_url, client=httpx.AsyncClient()
+        predictor=HttpPredictor(base_url=settings.inference_service_url, client=inference_client),
+        embedder=HttpEmbedder(
+            base_url=settings.inference_service_url,
+            client=inference_client,
+            model_id=settings.knowledge_embedding_model,
         ),
+        reranker=HttpReranker(base_url=settings.inference_service_url, client=inference_client),
         engine=engine,
         clock=SystemClock(),
         simulation_controller=HttpSimulationController(
             base_url=settings.simulation_service_url, client=httpx.AsyncClient()
         ),
+        inference_client=inference_client,
     )
 
 
@@ -146,6 +175,8 @@ def build_in_memory_container(
     health_probe: HealthProbe | None = None,
     predictor: Predictor | None = None,
     simulation_controller: SimulationController | None = None,
+    embedder: Embedder | None = None,
+    reranker: Reranker | None = None,
 ) -> Container:
     """Wire the application against an in-memory store.
 
@@ -162,6 +193,8 @@ def build_in_memory_container(
         unit_of_work_factory=unit_of_work_factory or InMemoryUnitOfWorkFactory(),
         health_probe=health_probe or AlwaysHealthyProbe(),
         predictor=predictor or UnavailablePredictor(),
+        embedder=embedder or UnavailableEmbedder(),
+        reranker=reranker or UnavailableReranker(),
         engine=None,
         clock=clock or SystemClock(),
         # No service to call in the in-memory wiring, so a run cannot be
@@ -184,9 +217,12 @@ def _assemble(
     unit_of_work_factory: UnitOfWorkFactory,
     health_probe: HealthProbe,
     predictor: Predictor,
+    embedder: Embedder,
+    reranker: Reranker,
     engine: AsyncEngine | None,
     clock: Clock,
     simulation_controller: SimulationController,
+    inference_client: httpx.AsyncClient | None = None,
 ) -> Container:
     """Build the container from already-chosen adapters."""
     # Built here rather than passed in: every wiring path wants the same one,
@@ -260,9 +296,27 @@ def _assemble(
             clock=clock,
             events=broadcaster,
         ),
+        list_knowledge_documents=ListKnowledgeDocuments(
+            unit_of_work_factory=unit_of_work_factory,
+        ),
+        ingest_knowledge_document=IngestKnowledgeDocument(
+            unit_of_work_factory=unit_of_work_factory,
+            embedder=embedder,
+            clock=clock,
+        ),
+        search_maintenance_knowledge=SearchMaintenanceKnowledge(
+            unit_of_work_factory=unit_of_work_factory,
+            embedder=embedder,
+            reranker=reranker,
+            minimum_score=settings.knowledge_minimum_score,
+        ),
+        set_active_document_version=SetActiveDocumentVersion(
+            unit_of_work_factory=unit_of_work_factory,
+        ),
         simulation_controller=simulation_controller,
         engine=engine,
         broadcaster=broadcaster,
+        inference_client=inference_client,
     )
 
 
@@ -318,4 +372,51 @@ class UnavailablePredictor:
         del readings
         raise PredictionUnavailableError(
             "No inference service is configured. Set INFERENCE_SERVICE_URL."
+        )
+
+
+class UnavailableEmbedder:
+    """An embedder that always refuses, for wiring with no model behind it.
+
+    The knowledge endpoints report a dependency outage rather than an empty
+    result: an empty result would read as "the documentation does not cover
+    this", which is a claim about the corpus rather than about the deployment.
+    """
+
+    @property
+    def model_id(self) -> str:
+        """The identifier a stored vector would carry, which is none of them."""
+        return "unavailable"
+
+    async def embed(self, texts: Sequence[str]) -> Sequence[tuple[float, ...]]:
+        """Refuse, whatever was asked.
+
+        Raises:
+            RetrievalUnavailableError: always.
+        """
+        del texts
+        raise RetrievalUnavailableError(
+            "No inference service is configured, so text cannot be embedded. "
+            "Set INFERENCE_SERVICE_URL."
+        )
+
+
+class UnavailableReranker:
+    """A reranker that always refuses, for wiring with no model behind it."""
+
+    async def rank(
+        self,
+        query: str,
+        documents: Sequence[str],
+        limit: int,
+    ) -> Sequence[RerankResult]:
+        """Refuse, whatever was asked.
+
+        Raises:
+            RetrievalUnavailableError: always.
+        """
+        del query, documents, limit
+        raise RetrievalUnavailableError(
+            "No inference service is configured, so candidates cannot be reranked. "
+            "Set INFERENCE_SERVICE_URL."
         )

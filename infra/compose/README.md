@@ -182,6 +182,47 @@ fresh instance and `/home`, `/signin`, `/workflows` afterwards.
    save, and the editor's trigger panel previews incoming messages either way.
    An inactive workflow shows you live traffic while subscribing to nothing.
 
+## Ingesting the maintenance corpus
+
+Phase 9's retrieval does nothing until the corpus is in the database, and it is
+ingested from a container rather than from a laptop — the same principle the
+simulator follows:
+
+```bash
+cd /opt/pdm/infra/compose
+docker compose --profile tools run --rm ingest
+```
+
+That parses the ten PDFs in `dummy_pdfs/`, sends them to the API inside the
+compose network, and activates each version. The service is profile-gated, so
+`docker compose up -d` never starts it: it is a job, and a job with a restart
+policy would re-ingest on a loop. It needs the API up and migrated — the
+migration is applied from a developer machine, above.
+
+Two things to expect the first time. The build fetched ~180 MB of model weights
+from HuggingFace, so the first request loads two encoders on one core and takes
+a few seconds; and running it a second time reports `unchanged` for every
+document, because re-ingesting identical content writes nothing and costs no
+embedding at all.
+
+Then measure that retrieval works, from the same image:
+
+```bash
+docker compose --profile tools run --rm ingest \
+  python -m ml knowledge evaluate --api-url http://api:8000
+```
+
+It prints two columns — vector search alone and with the cross-encoder — over
+`knowledge/eval/questions.json`, and those numbers are the phase's evidence.
+`--out results.json` writes them down. The abstention row is the one PRD section
+19 turns on: the share of questions the corpus cannot answer where the system
+said so instead of returning its nearest neighbour.
+
+The same check by hand: open the dashboard's **Knowledge** page and ask *"Vibration
+is rising on M003. What should I inspect?"* — the Bearing Inspection SOP should
+come back with its section and page. Ask for a gearbox torque specification and
+it should say the documentation does not cover it.
+
 ## Running the demonstration
 
 Register the machine first, or every reading is refused:
@@ -264,6 +305,10 @@ windowed, so an earlier run falls out of the one-hour view on its own.
 | n8n will not start: `Mismatching encryption keys` | `N8N_ENCRYPTION_KEY` changed after first boot. Restore the original, or wipe the `n8n-data` volume and start again — there is no third option. |
 | Inference container restarts repeatedly | `best.pt` or `artifact/normalization.json` is missing from `MODEL_DIR`. The service exits rather than serving degraded, so the log names the file. |
 | `inference_unavailable` (503) from the API | The inference container is down or still loading. On one core, a cold start takes a while. |
+| Inference container restarts naming a model, after a rebuild | The build could not reach HuggingFace, so the weights were not baked in. `HF_HUB_OFFLINE=1` is set at runtime on purpose: a missing model fails loudly rather than reaching for the network mid-demonstration. Rebuild with the network up. |
+| `retrieval_unavailable` (503) from `/knowledge/search` | The same container, one stage further along — embedding or reranking could not be performed. Note this is *not* the same as "no documents matched", which is a 200 with `sufficient: false`. |
+| `/knowledge` shows no documents | The corpus has not been ingested. Run the `ingest` service above. |
+| Ingest fails with `document_content_conflict` (409) | A version already exists with different text. Bump the version in `knowledge/corpus.json`, or re-run with `--allow-replace` if the change is a correction. |
 | API refuses to start, naming an unexpected variable | `Settings` uses `extra="forbid"`. Something is passing it a variable the API does not read — check nothing added an `env_file` to the `api` service. |
 | The workflows page spins forever | n8n's `/rest/push` websocket is not getting through. Check the shared Caddy is proxying `Upgrade`. |
 

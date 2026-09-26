@@ -59,6 +59,16 @@ services:
       RISK_WARNING_THRESHOLD: ${RISK_WARNING_THRESHOLD:-0.30}
       RISK_HIGH_THRESHOLD: ${RISK_HIGH_THRESHOLD:-0.60}
       RISK_CRITICAL_THRESHOLD: ${RISK_CRITICAL_THRESHOLD:-0.80}
+      # Named explicitly rather than left to the default, for the reason the
+      # simulator's variables are: a value that silently takes a default is a
+      # value nobody checks. This one has to match what the inference image
+      # loaded, because the API refuses to compare vectors from two models --
+      # and that refusal is only useful if the two names are in one place.
+      KNOWLEDGE_EMBEDDING_MODEL: ${KNOWLEDGE_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2@main}
+      # The lowest rerank score that counts as evidence. The default is
+      # permissive; `ml knowledge evaluate` prints the separation it should be
+      # set from.
+      KNOWLEDGE_MINIMUM_SCORE: ${KNOWLEDGE_MINIMUM_SCORE:-0.0}
     ports:
       # Loopback only. This is not a public exposure -- it exists so the shared
       # Caddy on the host network can reach the container by port, which is how
@@ -98,6 +108,13 @@ services:
       context: ../..
       dockerfile: infra/compose/Dockerfile.inference
     restart: unless-stopped
+    # Two sentence encoders joined the LSTM in Phase 9: ~180 MB of weights on
+    # top of torch's own footprint, on a box that is 3.8 GB shared with n8n and
+    # the simulator. The limit is here for the same reason the simulator's is --
+    # one service that grows without bound takes the demonstration with it --
+    # and it is generous because a batch of chunks through a cross-encoder is
+    # the largest thing this box is asked to do.
+    mem_limit: 1536m
     volumes:
       # Two files the image cannot contain: `best.pt` and
       # `artifact/normalization.json` are gitignored, so a build from a clone
@@ -309,6 +326,36 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # The corpus ingest, which runs once rather than staying up.
+  # ---------------------------------------------------------------------------
+  # Behind a profile, so `docker compose up -d` never starts it: it would ingest
+  # the corpus, exit, and be restarted forever by the restart policy that keeps
+  # every other service alive. Run it with:
+  #
+  #     docker compose --profile tools run --rm ingest
+  #
+  # It publishes no ports and needs none: it reaches the API over the compose
+  # network, by service name, so the ingest token never leaves this network and
+  # ingestion needs no public route.
+  #
+  # The same image runs the evaluation, against the same deployed stack:
+  #
+  #     docker compose --profile tools run --rm ingest \
+  #       python -m ml knowledge evaluate --api-url http://api:8000
+  #
+  # Measured there rather than on a laptop, because substituting a fake embedder
+  # would measure the harness rather than the retrieval.
+  ingest:
+    profiles: ["tools"]
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile.ingest
+    environment:
+      INGEST_API_TOKEN: ${INGEST_API_TOKEN:?INGEST_API_TOKEN is required}
+    # No restart policy: it is a job, and a job that restarts is a job that
+    # ingests the corpus on a loop.
 
 volumes:
   n8n-data:

@@ -12,6 +12,7 @@ from typing import Protocol
 
 from api.domain.ports.repositories import (
     IncidentRepository,
+    KnowledgeRepository,
     MachineRepository,
     PredictionRepository,
     SimulationRunRepository,
@@ -53,6 +54,11 @@ class UnitOfWork(Protocol):
     @property
     def simulations(self) -> SimulationRunRepository:
         """Storage for simulation runs."""
+        ...
+
+    @property
+    def knowledge(self) -> KnowledgeRepository:
+        """Storage for the maintenance corpus."""
         ...
 
     async def __aenter__(self) -> UnitOfWork:

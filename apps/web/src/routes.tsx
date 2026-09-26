@@ -1,8 +1,9 @@
 /**
  * The route table.
  *
- * Six routes, matching PRD section 20's list exactly. Two of them have no
- * backend yet and say so.
+ * Seven routes: PRD section 20's list, plus `/knowledge` -- the retrieval layer
+ * the Copilot is built on, shown on its own so the citations behind an answer
+ * are reachable without asking for one.
  */
 
 import { createBrowserRouter } from 'react-router-dom'
@@ -11,6 +12,7 @@ import { AppShell } from '@/components/AppShell'
 import { EmptyState } from '@/components/States'
 import { CopilotPage } from '@/features/copilot/CopilotPage'
 import { IncidentsPage } from '@/features/incidents/IncidentsPage'
+import { KnowledgePage } from '@/features/knowledge/KnowledgePage'
 import { MachinePage } from '@/features/machine/MachinePage'
 import { MachinesPage } from '@/features/fleet/MachinesPage'
 import { OverviewPage } from '@/features/fleet/OverviewPage'
@@ -30,6 +32,7 @@ export const router = createBrowserRouter([
       { path: 'machines/:machineId', element: <MachinePage /> },
       { path: 'incidents', element: <IncidentsPage /> },
       { path: 'simulation', element: <SimulationPage /> },
+      { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'copilot', element: <CopilotPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],

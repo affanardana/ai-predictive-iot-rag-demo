@@ -10,6 +10,15 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "httpx>=0.28",
+    # Retrieval (Phase 9): a sentence encoder for `/embed` and a cross-encoder
+    # for `/rerank`. Both are local models -- PRD section 25 forbids nothing here,
+    # but the box has one core and no GPU, so the hosted-API alternative would
+    # have put every maintenance question through the network to no benefit.
+    #
+    # This rides on the torch that `ml[train]` already brings, which is why it
+    # belongs in this service rather than the API: the API container has no torch
+    # and `api.domain` is forbidden from importing it.
+    "sentence-transformers>=3.3",
 ]
 
 [tool.uv.sources]

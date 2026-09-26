@@ -213,6 +213,50 @@ contract suite holds both to it. Two runs on one machine would interleave two
 scenarios' readings on the same charts, and the risk band they produced would
 describe neither.
 
+## Maintenance knowledge
+
+Retrieval answers PRD section 19's question — *is the documentation there?* — and
+the pipeline crosses four machines to do it:
+
+```text
+dummy_pdfs/*.pdf ──pypdf──▶ lines {page, text, font_size}
+                                │  ml knowledge ingest  [ingest container]
+                                ▼
+                        POST /api/v1/knowledge/documents   (token-guarded)
+                                │                          [api]
+                    chunk ─▶ content_hash ─▶ /embed ─▶ pgvector
+                                │                    [inference] [Supabase]
+                   POST /api/v1/knowledge/search ─▶ embed ─▶ KNN ─▶ rerank
+```
+
+**Parsing is separated from chunking, and the split is architectural.** The
+parser lives in its own container because it is the fragile, evolving part and
+`pypdf` in the API image would put a PDF parser in the request path and make
+every chunker change an API redeploy. Chunking lives in the API's domain because
+it is a *rule* — what counts as a heading, how long a passage may be, where
+overlap is allowed — and rules live behind the port boundary. The wire type
+between them is three fields.
+
+**Active means eligible as evidence.** `is_active` is filtered in the same query
+that ranks, so a superseded version cannot be retrieved at any `k`; at most one
+version of a document is active, enforced by a partial unique index. Withdrawal
+(`activate(key, None)`) is how a procedure leaves the evidence base, and it is
+what makes AC-009 reachable: a document that cannot be retrieved cannot be
+answered from.
+
+**The chunker's cap is a correctness constraint, not a preference.** The
+embedding model reads 256 word-pieces and truncates the rest silently, so a
+longer chunk retrieves on words that are not in it. The cap is asserted twice in
+the API and the service encodes with truncation off, so the failure raises
+rather than quietly losing a tail.
+
+**Two stages, and the second is optional by request only.** The vector search is
+exact and shallow; the cross-encoder reads the query and each candidate together
+and orders them better, at a cost per candidate — hence a bounded candidate list.
+`"rerank": false` is a caller's explicit choice, used by the evaluation to
+measure what the stage contributes. An outage still returns 503: falling back
+silently would make the ranking quietly worse with nothing logged.
+
 ## Known limitations
 
 - **The event stream is fanned out in memory, so the API must stay a single

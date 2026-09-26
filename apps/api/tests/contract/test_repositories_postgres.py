@@ -24,19 +24,30 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
+from api.domain.services.similarity import cosine_similarity
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.time_window import Aggregation
 from api.infrastructure.persistence.sql.base import Base
-from api.infrastructure.persistence.sql.models import PredictionModel
+from api.infrastructure.persistence.sql.models import KnowledgeChunkModel, PredictionModel
 from api.infrastructure.persistence.sql.session import create_session_factory
 from api.infrastructure.persistence.sql.unit_of_work import SqlUnitOfWorkFactory
 from tests.contract.repository_contract import (
+    ChunkSearchContract,
     IncidentRepositoryContract,
+    KnowledgeRepositoryContract,
     MachineRepositoryContract,
     PredictionRepositoryContract,
     TelemetryRepositoryContract,
 )
-from tests.support.factories import DEFAULT_NOW, make_machine, make_telemetry
+from tests.support.factories import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_NOW,
+    make_embedding,
+    make_knowledge_chunk,
+    make_knowledge_document,
+    make_machine,
+    make_telemetry,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -262,6 +273,109 @@ async def test_check_constraint_rejects_an_unknown_risk_level(
             risk_level="CATASTROPHIC",
             horizon_seconds=3600,
             model_version="lstm-v1",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        await postgres_session.flush()
+
+    await postgres_session.rollback()
+
+
+class TestPostgresKnowledgeRepository(KnowledgeRepositoryContract):
+    """The knowledge repository satisfies the contract on PostgreSQL."""
+
+    @pytest.fixture
+    def uow_factory(self, postgres_uow_factory: UnitOfWorkFactory) -> UnitOfWorkFactory:
+        """Return the PostgreSQL-backed factory."""
+        return postgres_uow_factory
+
+
+class TestPostgresChunkSearch(ChunkSearchContract):
+    """The PostgreSQL adapter ranks vectors with pgvector."""
+
+    @pytest.fixture
+    def uow_factory(self, postgres_uow_factory: UnitOfWorkFactory) -> UnitOfWorkFactory:
+        """Return the PostgreSQL-backed factory."""
+        return postgres_uow_factory
+
+
+async def test_pgvector_cosine_agrees_with_the_domain(
+    postgres_uow_factory: UnitOfWorkFactory,
+) -> None:
+    """`<=>` and `cosine_similarity` return the same similarity.
+
+    The in-memory adapter ranks with the domain's pure-Python cosine; production
+    ranks in SQL. Two implementations of one formula drift, so this asserts them
+    against each other rather than trusting that they agree -- the same move as
+    `test_open_counts_agrees_with_is_open`.
+    """
+    query = make_embedding(1.0, 0.5, 0.25)
+    vectors = [
+        make_embedding(1.0),
+        make_embedding(0.0, 1.0),
+        make_embedding(1.0, 1.0, 1.0),
+        make_embedding(-1.0, 0.5),
+    ]
+    async with postgres_uow_factory() as uow:
+        document = make_knowledge_document(is_active=True)
+        await uow.knowledge.add_document(document)
+        await uow.knowledge.add_chunks(
+            [
+                make_knowledge_chunk(
+                    document_id=document.document_id,
+                    chunk_index=index,
+                    content=f"Passage {index}.",
+                    embedding=vector,
+                )
+                for index, vector in enumerate(vectors)
+            ]
+        )
+
+    async with postgres_uow_factory() as uow:
+        matches = await uow.knowledge.similar_chunks(
+            query,
+            embedding_model=DEFAULT_EMBEDDING_MODEL,
+            limit=len(vectors),
+        )
+
+    assert len(matches) == len(vectors)
+    for match in matches:
+        assert match.score == pytest.approx(
+            cosine_similarity(query, match.chunk.embedding),
+            # `vector` is single precision where the domain computes in double,
+            # so the two agree to about float32 epsilon rather than exactly.
+            abs=1e-6,
+        )
+
+
+async def test_the_vector_column_is_a_pgvector_type(
+    postgres_uow_factory: UnitOfWorkFactory,
+    postgres_session: AsyncSession,
+) -> None:
+    """A vector of the wrong width is refused by the database.
+
+    Behavioural rather than introspective: it asserts that the extension is
+    installed and the column really is `vector(384)`, without asking the
+    catalogue what type it thinks it has. A JSON fallback would accept this row
+    happily, which is exactly the failure being ruled out.
+    """
+    async with postgres_uow_factory() as uow:
+        document = make_knowledge_document(is_active=True)
+        await uow.knowledge.add_document(document)
+        await uow.commit()
+
+    postgres_session.add(
+        KnowledgeChunkModel(
+            chunk_id="chunk-wrong-width",
+            document_id=document.document_id,
+            chunk_index=99,
+            section="",
+            page=1,
+            content="Too short a vector.",
+            char_count=20,
+            embedding=[0.0, 0.0, 0.0],
+            embedding_model=DEFAULT_EMBEDDING_MODEL,
         )
     )
 

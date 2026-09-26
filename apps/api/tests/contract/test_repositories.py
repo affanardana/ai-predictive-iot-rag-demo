@@ -13,12 +13,15 @@ from api.domain.ports.unit_of_work import UnitOfWorkFactory
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
 from api.infrastructure.persistence.sql.unit_of_work import SqlUnitOfWorkFactory
 from tests.contract.repository_contract import (
+    ChunkSearchContract,
     IncidentRepositoryContract,
+    KnowledgeRepositoryContract,
     MachineRepositoryContract,
     PredictionRepositoryContract,
     SimulationRunRepositoryContract,
     TelemetryRepositoryContract,
 )
+from tests.support.factories import DEFAULT_EMBEDDING_MODEL, make_embedding
 
 
 class InMemoryAdapterMixin:
@@ -77,3 +80,36 @@ class TestInMemorySimulationRunRepository(InMemoryAdapterMixin, SimulationRunRep
 
 class TestSqliteSimulationRunRepository(SqliteAdapterMixin, SimulationRunRepositoryContract):
     """The SQL simulation run repository satisfies the contract."""
+
+
+class TestInMemoryKnowledgeRepository(InMemoryAdapterMixin, KnowledgeRepositoryContract):
+    """The in-memory knowledge repository satisfies the contract."""
+
+
+class TestSqliteKnowledgeRepository(SqliteAdapterMixin, KnowledgeRepositoryContract):
+    """The SQL knowledge repository satisfies the contract on SQLite."""
+
+
+class TestInMemoryChunkSearch(InMemoryAdapterMixin, ChunkSearchContract):
+    """The in-memory adapter ranks vectors with the domain's cosine.
+
+    It is the only offline adapter that can rank at all, which is why it earns
+    its place as the second implementation the search contract is asserted
+    against.
+    """
+
+
+async def test_vector_search_is_refused_on_sqlite(sqlite_uow_factory: SqlUnitOfWorkFactory) -> None:
+    """SQLite stores embeddings as JSON, so it cannot rank them.
+
+    Asserted rather than left implicit. An adapter that returned nothing, or
+    that quietly fell back to insertion order, would look like a passing search
+    with no way to tell from the result.
+    """
+    async with sqlite_uow_factory() as uow:
+        with pytest.raises(NotImplementedError, match="PostgreSQL"):
+            await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=5,
+            )

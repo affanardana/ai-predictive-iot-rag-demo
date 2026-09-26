@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from api.infrastructure.persistence.memory.repositories import (
     InMemoryIncidentRepository,
+    InMemoryKnowledgeRepository,
     InMemoryMachineRepository,
     InMemoryPredictionRepository,
     InMemorySimulationRunRepository,
@@ -31,6 +32,7 @@ class InMemoryUnitOfWork:
         self.predictions = InMemoryPredictionRepository(store)
         self.incidents = InMemoryIncidentRepository(store)
         self.simulations = InMemorySimulationRunRepository(store)
+        self.knowledge = InMemoryKnowledgeRepository(store)
 
     async def __aenter__(self) -> InMemoryUnitOfWork:
         """Take a snapshot to roll back to."""

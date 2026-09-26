@@ -44,6 +44,15 @@ export type SimulationScenario = Schemas['SimulationScenario']
 export type RunStatus = Schemas['RunStatus']
 export type StartSimulationRequest = Schemas['StartSimulationRequest']
 
+// --- Maintenance knowledge -------------------------------------------------
+
+export type KnowledgeDocument = Schemas['KnowledgeDocumentSchema']
+export type KnowledgeCitation = Schemas['CitationSchema']
+export type KnowledgeMatch = Schemas['KnowledgeMatchSchema']
+export type SearchKnowledgeRequest = Schemas['SearchKnowledgeRequest']
+export type SearchKnowledgeResponse = Schemas['SearchKnowledgeResponse']
+export type DocumentCategory = Schemas['DocumentCategory']
+
 // --- Enums the UI switches on ----------------------------------------------
 
 export type RiskLevel = Schemas['RiskLevel']

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from api.infrastructure.persistence.sql.repositories import (
     SqlIncidentRepository,
+    SqlKnowledgeRepository,
     SqlMachineRepository,
     SqlPredictionRepository,
     SqlSimulationRunRepository,
@@ -35,6 +36,7 @@ class SqlUnitOfWork:
         self.predictions = SqlPredictionRepository(self._session)
         self.incidents = SqlIncidentRepository(self._session)
         self.simulations = SqlSimulationRunRepository(self._session)
+        self.knowledge = SqlKnowledgeRepository(self._session, dialect_name)
 
     async def __aenter__(self) -> SqlUnitOfWork:
         """Enter the transactional scope."""

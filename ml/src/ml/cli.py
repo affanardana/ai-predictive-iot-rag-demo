@@ -1,6 +1,6 @@
 """Command line entry point.
 
-Three commands, in the order they are used:
+The dataset commands, in the order they are used:
 
     ml dataset generate    run the fleet, writing telemetry and truth
     ml dataset export      read those back, and write the training artifact
@@ -10,11 +10,22 @@ Three commands, in the order they are used:
 normalisation are decisions about *training*, and they can be revisited — a
 different split, a different horizon — without regenerating six minutes of
 telemetry. The two Parquet files are the interface between the halves.
+
+The knowledge commands, which need the `knowledge` extra:
+
+    ml knowledge extract   print what a PDF parses into, page and size included
+    ml knowledge ingest    send the corpus to the API, which stores it
+    ml knowledge evaluate  measure retrieval against the labelled questions
+
+`extract` exists on its own because the parse is the fragile half. It prints
+what the chunker will see, so a change in `pypdf` or in the corpus shows up as
+readable output rather than as a retrieval score that moved.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -34,12 +45,22 @@ from ml.dataset.plan import PLAN_FILENAME, document_for, read_plan, write_plan
 from ml.dataset.report import build_report
 from ml.evaluation.errors import EvaluationError
 from ml.experiment.errors import ExperimentError
+from ml.knowledge.corpus import CorpusEntry, read_corpus
+from ml.knowledge.errors import KnowledgeError
 from simulator.domain.timestamps import utc_now
 
 DEFAULT_DATASET_DIR = "data/dataset"
 DEFAULT_ARTIFACT_DIR = "data/training"
 DEFAULT_MODEL_DIR = "data/models"
 DEFAULT_CONFIG = "ml/configs/lstm.json"
+DEFAULT_CORPUS = "knowledge/corpus.json"
+DEFAULT_QUESTIONS = "knowledge/eval/questions.json"
+#: Where the API listens on the development machine. Inside compose the ingest
+#: container is pointed at `http://api:8000`, which is why this is a flag.
+DEFAULT_API_URL = "http://localhost:8000"
+#: The variable the token comes from, matching the API's own setting. Passed as
+#: an environment variable rather than a flag so it stays out of shell history.
+INGEST_TOKEN_VARIABLE = "INGEST_API_TOKEN"  # noqa: S105 - a variable name, not a secret
 
 DEFAULT_MACHINE_COUNT = 100
 DEFAULT_SHIFT_MACHINE_COUNT = 12
@@ -127,6 +148,41 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--run", type=Path, required=True)
     verify_parser.add_argument("--checkpoint", default="best.pt")
 
+    knowledge = commands.add_parser("knowledge", help="Parse, ingest, or evaluate the corpus.")
+    knowledge_actions = knowledge.add_subparsers(dest="action", required=True)
+
+    extract_parser = knowledge_actions.add_parser(
+        "extract", help="Print what a document parses into."
+    )
+    extract_parser.add_argument("--corpus", type=Path, default=Path(DEFAULT_CORPUS))
+    extract_parser.add_argument(
+        "--document",
+        default=None,
+        help="One document key from the manifest. Omitted means every document.",
+    )
+
+    ingest_parser = knowledge_actions.add_parser("ingest", help="Send the corpus to the API.")
+    ingest_parser.add_argument("--corpus", type=Path, default=Path(DEFAULT_CORPUS))
+    ingest_parser.add_argument("--api-url", default=DEFAULT_API_URL)
+    ingest_parser.add_argument(
+        "--activate",
+        action="store_true",
+        help="Make each ingested version the retrievable one.",
+    )
+    ingest_parser.add_argument(
+        "--allow-replace",
+        action="store_true",
+        help="Rewrite a version whose text changed, instead of refusing it.",
+    )
+
+    evaluate_parser = knowledge_actions.add_parser(
+        "evaluate", help="Measure retrieval against the labelled questions."
+    )
+    evaluate_parser.add_argument("--questions", type=Path, default=Path(DEFAULT_QUESTIONS))
+    evaluate_parser.add_argument("--api-url", default=DEFAULT_API_URL)
+    evaluate_parser.add_argument("--limit", type=int, default=5)
+    evaluate_parser.add_argument("--out", type=Path, default=None)
+
     return parser
 
 
@@ -135,7 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return _dispatch(args)
-    except (DatasetError, EvaluationError, ExperimentError) as exc:
+    except (DatasetError, EvaluationError, ExperimentError, KnowledgeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILURE
 
@@ -144,11 +200,157 @@ def _dispatch(args: argparse.Namespace) -> int:
     """Route to the requested action."""
     if args.command == "model":
         return _model(args)
+    if args.command == "knowledge":
+        return _knowledge(args)
     if args.action == "generate":
         return _generate(args)
     if args.action == "export":
         return _export(args)
     return _report(args)
+
+
+def _missing_knowledge_extra() -> int:
+    """Report the missing extra, and the command that installs it."""
+    print(
+        "error: this command needs the knowledge extra.\n"
+        "       uv sync --locked --all-packages --extra knowledge",
+        file=sys.stderr,
+    )
+    return EXIT_FAILURE
+
+
+def _knowledge(args: argparse.Namespace) -> int:
+    """Route a knowledge command.
+
+    Reading the manifest happens here; parsing and posting happen in the
+    branches, because those need the `knowledge` extra -- `pypdf` for the first,
+    `httpx` for the others -- and `ml dataset report` has to keep working
+    without it. `ml.knowledge.corpus` is imported at the top of this file
+    precisely because it is the one module in that package that needs nothing
+    outside the standard library.
+    """
+    entries = read_corpus(args.corpus)
+    if args.action == "extract":
+        return _knowledge_extract(args, entries)
+    if args.action == "ingest":
+        return _knowledge_ingest(args, entries)
+    return _knowledge_evaluate(args, entries)
+
+
+def _knowledge_extract(
+    args: argparse.Namespace,
+    entries: Sequence[CorpusEntry],
+) -> int:
+    """Print what each document parses into, and at what sizes.
+
+    The size histogram is the point. Heading detection is relative to a
+    document's own body size, so a reader checking a parse needs to see the
+    sizes rather than only the text.
+    """
+    from collections import Counter
+
+    selected = [entry for entry in entries if args.document in (None, entry.document_key)]
+    if not selected:
+        print(f"error: no document with key '{args.document}'.", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    try:
+        from ml.knowledge.extraction import extract_lines
+
+        # `pypdf` is imported inside `extract_lines`, so the missing extra
+        # surfaces here rather than at import time.
+        parsed = [(entry, extract_lines(entry.path)) for entry in selected]
+    except ImportError:
+        return _missing_knowledge_extra()
+
+    for entry, lines in parsed:
+        sizes = Counter(round(line.font_size, 2) for line in lines)
+        histogram = ", ".join(f"{size}pt x{count}" for size, count in sizes.most_common())
+        print(f"\n=== {entry.title} — {entry.document_key} v{entry.version}")
+        print(f"    {len(lines)} lines, sizes: {histogram}")
+        for line in lines:
+            print(f"{line.page:>3} {line.font_size:>6.2f} | {line.text}")
+    return 0
+
+
+def _knowledge_ingest(args: argparse.Namespace, entries: Sequence[CorpusEntry]) -> int:
+    """Parse every document and send it to the API.
+
+    Progress goes to stderr and the outcomes to stdout, so `ml knowledge ingest
+    > outcomes.txt` still shows a reader what is happening.
+    """
+    try:
+        import httpx
+
+        from ml.knowledge.ingest import ingest_corpus
+    except ImportError:
+        return _missing_knowledge_extra()
+
+    headers: dict[str, str] = {}
+    token = os.environ.get(INGEST_TOKEN_VARIABLE)
+    if token:
+        headers["X-Ingest-Token"] = token
+    elif args.api_url.startswith(("http://localhost", "http://127.")):
+        # No token against a local API: `APP_ENV=local` is the one environment
+        # where the API does not require one. Said out loud rather than assumed,
+        # because the same command against a deployment fails without it.
+        print("note: no token, addressing a local API.", file=sys.stderr)
+
+    with httpx.Client(headers=headers) as client:
+        outcomes = ingest_corpus(
+            entries,
+            client=client,
+            api_url=args.api_url,
+            activate=args.activate,
+            allow_replace=args.allow_replace,
+            progress=lambda message: print(message, file=sys.stderr),
+        )
+
+    for outcome in outcomes:
+        print(outcome.render())
+    passes = sum(outcome.chunk_count for outcome in outcomes)
+    print(f"\n{len(outcomes)} documents, {passes} passages.")
+    return 0
+
+
+def _knowledge_evaluate(args: argparse.Namespace, entries: Sequence[CorpusEntry]) -> int:
+    """Measure retrieval with and without reranking, and report both."""
+    import json
+
+    try:
+        import httpx
+
+        from ml.knowledge import evaluation
+    except ImportError:
+        return _missing_knowledge_extra()
+
+    questions = evaluation.read_questions(args.questions)
+    print(f"{len(questions)} questions against {len(entries)} documents.", file=sys.stderr)
+
+    with httpx.Client() as client:
+        without = evaluation.measure(
+            evaluation.ask(
+                questions, client=client, api_url=args.api_url, rerank=False, limit=args.limit
+            )
+        )
+        with_rerank = evaluation.measure(
+            evaluation.ask(
+                questions, client=client, api_url=args.api_url, rerank=True, limit=args.limit
+            )
+        )
+
+    print(evaluation.render_comparison(without, with_rerank, documents=len(entries)))
+    if args.out is not None:
+        payload = {
+            "questions": str(args.questions),
+            "limit": args.limit,
+            "documents": len(entries),
+            "vector_only": evaluation.as_payload(without),
+            "reranked": evaluation.as_payload(with_rerank),
+        }
+        args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"\nwrote {args.out}", file=sys.stderr)
+    return 0
 
 
 def _model(args: argparse.Namespace) -> int:

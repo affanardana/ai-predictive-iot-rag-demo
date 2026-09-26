@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 
 from api.domain.entities.incident import Incident
+from api.domain.entities.knowledge_document import KnowledgeChunk, KnowledgeDocument
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
 from api.domain.entities.simulation_run import SimulationRun
@@ -32,6 +33,9 @@ class InMemoryStore:
     predictions: dict[str, Prediction] = field(default_factory=dict)
     incidents: dict[str, Incident] = field(default_factory=dict)
     simulations: dict[str, SimulationRun] = field(default_factory=dict)
+    knowledge_documents: dict[str, KnowledgeDocument] = field(default_factory=dict)
+    #: Keyed by `chunk_id`; a chunk is only ever read through its document.
+    knowledge_chunks: dict[str, KnowledgeChunk] = field(default_factory=dict)
 
     def snapshot(self) -> InMemoryStore:
         """Return a deep copy of the current state."""
@@ -49,3 +53,5 @@ class InMemoryStore:
         self.predictions = snapshot.predictions
         self.incidents = snapshot.incidents
         self.simulations = snapshot.simulations
+        self.knowledge_documents = snapshot.knowledge_documents
+        self.knowledge_chunks = snapshot.knowledge_chunks

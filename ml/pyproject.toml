@@ -26,6 +26,21 @@ dependencies = [
 [project.optional-dependencies]
 train = ["torch>=2.6"]
 
+# PDF text extraction and an HTTP client, needed by `ml knowledge extract`,
+# `ingest` and `evaluate` and by nothing else in this package. `httpx` is here
+# rather than in the core dependencies for the same reason `pypdf` is: the
+# knowledge commands are the only thing in `ml` that talks to a service, and a
+# core dependency would travel into every member that depends on `ml`.
+#
+# An extra rather than a core dependency, for the reason recorded above: `ml`
+# rides into `services/inference` as `ml[train]`, so a core `pypdf` would put a
+# PDF parser into the model-serving image to serve a code path it does not have.
+# The same argument that keeps `paho` out of `simulator`'s core applies verbatim.
+#
+# The extraction tests skip when this is absent, so the default test tier still
+# runs on a machine that has never installed it.
+knowledge = ["pypdf>=5.1", "httpx>=0.28"]
+
 # `ml` is the first workspace member to depend on another. Without this, uv
 # treats `simulator` as a PyPI package name and fails at lock time; with it, the
 # dependency resolves to the sibling member, so the two always build together

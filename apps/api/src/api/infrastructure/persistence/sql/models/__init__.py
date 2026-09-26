@@ -12,6 +12,10 @@ drift apart.
 """
 
 from api.infrastructure.persistence.sql.models.incident import IncidentModel
+from api.infrastructure.persistence.sql.models.knowledge import (
+    KnowledgeChunkModel,
+    KnowledgeDocumentModel,
+)
 from api.infrastructure.persistence.sql.models.machine import MachineModel
 from api.infrastructure.persistence.sql.models.prediction import PredictionModel
 from api.infrastructure.persistence.sql.models.simulation_run import SimulationRunModel
@@ -19,6 +23,8 @@ from api.infrastructure.persistence.sql.models.telemetry import TelemetryModel
 
 __all__ = [
     "IncidentModel",
+    "KnowledgeChunkModel",
+    "KnowledgeDocumentModel",
     "MachineModel",
     "PredictionModel",
     "SimulationRunModel",

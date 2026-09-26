@@ -14,10 +14,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from api.domain.entities.incident import Incident
+from api.domain.entities.knowledge_document import KnowledgeChunk, KnowledgeDocument
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
 from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
+from api.domain.value_objects.document_category import DocumentCategory
 from api.domain.value_objects.failure_probability import FailureProbability
 from api.domain.value_objects.incident_status import IncidentStatus
 from api.domain.value_objects.incident_type import IncidentType
@@ -28,6 +30,8 @@ from api.domain.value_objects.sensor_reading import SensorReading
 from api.domain.value_objects.simulation_scenario import SimulationScenario
 from api.infrastructure.persistence.sql.models import (
     IncidentModel,
+    KnowledgeChunkModel,
+    KnowledgeDocumentModel,
     MachineModel,
     PredictionModel,
     SimulationRunModel,
@@ -223,4 +227,76 @@ def simulation_run_from_model(model: SimulationRunModel) -> SimulationRun:
         finished_at=as_aware(model.finished_at) if model.finished_at is not None else None,
         detail=model.detail,
         resume_count=model.resume_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Knowledge
+# ---------------------------------------------------------------------------
+
+
+def knowledge_document_to_model(document: KnowledgeDocument) -> KnowledgeDocumentModel:
+    """Build a persistence model from a knowledge document."""
+    return KnowledgeDocumentModel(
+        document_id=document.document_id,
+        document_key=document.document_key,
+        title=document.title,
+        category=document.category.value,
+        version=document.version,
+        is_active=document.is_active,
+        is_synthetic=document.is_synthetic,
+        source_path=document.source_path,
+        content_hash=document.content_hash,
+        page_count=document.page_count,
+        ingested_at=document.ingested_at,
+    )
+
+
+def knowledge_document_from_model(model: KnowledgeDocumentModel) -> KnowledgeDocument:
+    """Build a knowledge document from a persistence model."""
+    return KnowledgeDocument(
+        document_id=model.document_id,
+        document_key=model.document_key,
+        title=model.title,
+        category=DocumentCategory(model.category),
+        version=model.version,
+        is_active=model.is_active,
+        is_synthetic=model.is_synthetic,
+        source_path=model.source_path,
+        content_hash=model.content_hash,
+        page_count=model.page_count,
+        ingested_at=as_aware(model.ingested_at),
+    )
+
+
+def knowledge_chunk_to_model(chunk: KnowledgeChunk) -> KnowledgeChunkModel:
+    """Build a persistence model from a knowledge chunk."""
+    return KnowledgeChunkModel(
+        chunk_id=chunk.chunk_id,
+        document_id=chunk.document_id,
+        chunk_index=chunk.chunk_index,
+        section=chunk.section,
+        page=chunk.page,
+        content=chunk.content,
+        char_count=len(chunk.content),
+        embedding=list(chunk.embedding),
+        embedding_model=chunk.embedding_model,
+    )
+
+
+def knowledge_chunk_from_model(model: KnowledgeChunkModel) -> KnowledgeChunk:
+    """Build a knowledge chunk from a persistence model.
+
+    The embedding is copied into a tuple, because pgvector reads a vector back
+    as a mutable array and the entity is frozen.
+    """
+    return KnowledgeChunk(
+        chunk_id=model.chunk_id,
+        document_id=model.document_id,
+        chunk_index=model.chunk_index,
+        section=model.section,
+        page=model.page,
+        content=model.content,
+        embedding=tuple(float(value) for value in model.embedding),
+        embedding_model=model.embedding_model,
     )

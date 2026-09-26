@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, func, select, type_coerce
+from sqlalchemy import DateTime, Integer, delete, false, func, select, type_coerce, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,11 +18,18 @@ from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql import ColumnElement
 
 from api.domain.entities.incident import Incident
+from api.domain.entities.knowledge_document import KnowledgeChunk, KnowledgeDocument
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
 from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
-from api.domain.errors import IncidentNotFoundError, SimulationRunNotFoundError
+from api.domain.errors import (
+    IncidentNotFoundError,
+    KnowledgeDocumentNotFoundError,
+    SimulationRunNotFoundError,
+)
+from api.domain.value_objects.chunk_match import ChunkMatch
+from api.domain.value_objects.document_category import DocumentCategory
 from api.domain.value_objects.incident_status import OPEN_INCIDENT_STATUSES, IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
@@ -34,6 +41,10 @@ from api.infrastructure.persistence.sql.mappers import (
     as_aware,
     incident_from_model,
     incident_to_model,
+    knowledge_chunk_from_model,
+    knowledge_chunk_to_model,
+    knowledge_document_from_model,
+    knowledge_document_to_model,
     machine_from_model,
     machine_to_model,
     prediction_from_model,
@@ -44,6 +55,8 @@ from api.infrastructure.persistence.sql.mappers import (
 )
 from api.infrastructure.persistence.sql.models import (
     IncidentModel,
+    KnowledgeChunkModel,
+    KnowledgeDocumentModel,
     MachineModel,
     PredictionModel,
     SimulationRunModel,
@@ -649,3 +662,184 @@ def _active_status_values() -> list[str]:
     show up as two runs interleaving readings on one machine.
     """
     return sorted(status.value for status in ACTIVE_RUN_STATUSES)
+
+
+#: Dialects that can rank by vector distance. SQLite has no vector type at all,
+#: so its chunks are stored as JSON and can only be filtered by metadata.
+_VECTOR_DIALECTS = frozenset({"postgresql"})
+
+_UNSUPPORTED_VECTOR_MESSAGE = (
+    "Vector search is implemented for PostgreSQL (pgvector) only; got dialect "
+    "'{dialect}'. The default test tier stores embeddings as JSON and cannot "
+    "rank them, which is why ranking is covered by the postgres tier."
+)
+
+
+class SqlKnowledgeRepository:
+    """Maintenance corpus backed by the operational database."""
+
+    def __init__(self, session: AsyncSession, dialect_name: str) -> None:
+        self._session = session
+        self._dialect_name = dialect_name
+
+    async def add_document(self, document: KnowledgeDocument) -> None:
+        """Persist a document version.
+
+        A second active version of a key is refused by the partial unique index,
+        which surfaces here as a `PersistenceError`.
+        """
+        with translating_persistence_errors():
+            self._session.add(knowledge_document_to_model(document))
+            await self._session.flush()
+
+    async def get_document(self, document_key: str, version: str) -> KnowledgeDocument | None:
+        """Return one version of a document, or None if it was never ingested."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(KnowledgeDocumentModel).where(
+                    KnowledgeDocumentModel.document_key == document_key,
+                    KnowledgeDocumentModel.version == version,
+                )
+            )
+            model = result.scalars().first()
+            return knowledge_document_from_model(model) if model is not None else None
+
+    async def list_documents(self, limit: int) -> Sequence[KnowledgeDocument]:
+        """Return documents across every key, newest first."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(KnowledgeDocumentModel)
+                # `document_key` breaks ties so two versions ingested in the same
+                # instant, or two documents ingested in the same second, come
+                # back in a stable order.
+                .order_by(
+                    KnowledgeDocumentModel.ingested_at.desc(),
+                    KnowledgeDocumentModel.document_key,
+                    KnowledgeDocumentModel.version,
+                )
+                .limit(limit)
+            )
+            return [knowledge_document_from_model(model) for model in result.scalars().all()]
+
+    async def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None:
+        """Persist a document's chunks."""
+        if not chunks:
+            return
+        with translating_persistence_errors():
+            self._session.add_all([knowledge_chunk_to_model(chunk) for chunk in chunks])
+            await self._session.flush()
+
+    async def replace_content(
+        self,
+        document: KnowledgeDocument,
+        chunks: Sequence[KnowledgeChunk],
+    ) -> None:
+        """Replace a version's stored content, in the caller's transaction."""
+        with translating_persistence_errors():
+            await self._session.execute(
+                update(KnowledgeDocumentModel)
+                .where(KnowledgeDocumentModel.document_id == document.document_id)
+                .values(content_hash=document.content_hash, page_count=document.page_count)
+            )
+            await self._session.execute(
+                delete(KnowledgeChunkModel).where(
+                    KnowledgeChunkModel.document_id == document.document_id
+                )
+            )
+            self._session.add_all([knowledge_chunk_to_model(chunk) for chunk in chunks])
+            await self._session.flush()
+
+    async def chunks_for(self, document_id: str) -> Sequence[KnowledgeChunk]:
+        """Return a document's passages, in reading order."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(KnowledgeChunkModel)
+                .where(KnowledgeChunkModel.document_id == document_id)
+                .order_by(KnowledgeChunkModel.chunk_index)
+            )
+            return [knowledge_chunk_from_model(model) for model in result.scalars().all()]
+
+    async def activate(self, document_key: str, version: str | None) -> None:
+        """Make one version of a document active, or withdraw the document.
+
+        One statement, because two would transiently break the partial unique
+        index: PostgreSQL checks a non-deferrable unique per statement, and a
+        partial index cannot be deferred.
+
+        `version=None` compares against `false()` rather than against NULL.
+        `is_active = (version = NULL)` evaluates to NULL, not to false, and the
+        column is not nullable -- so the withdrawal case has to be spelled out
+        rather than falling out of the comparison.
+        """
+        with translating_persistence_errors():
+            target = KnowledgeDocumentModel.version == version if version is not None else false()
+            if not await self._version_exists(document_key, version):
+                raise KnowledgeDocumentNotFoundError(document_key, version)
+            await self._session.execute(
+                update(KnowledgeDocumentModel)
+                .where(KnowledgeDocumentModel.document_key == document_key)
+                .values(is_active=target)
+            )
+
+    async def _version_exists(self, document_key: str, version: str | None) -> bool:
+        """Whether any row matches, before the activation statement runs.
+
+        A separate read rather than a row count from the update: rows of this
+        table are never deleted, so a version that exists here still exists when
+        the statement runs, and the read is typed where `rowcount` on an async
+        `UPDATE` is not.
+        """
+        conditions = [KnowledgeDocumentModel.document_key == document_key]
+        if version is not None:
+            conditions.append(KnowledgeDocumentModel.version == version)
+        result = await self._session.execute(
+            select(KnowledgeDocumentModel.document_id).where(*conditions).limit(1)
+        )
+        return result.first() is not None
+
+    async def similar_chunks(
+        self,
+        embedding: Sequence[float],
+        *,
+        embedding_model: str,
+        limit: int,
+        category: DocumentCategory | None = None,
+    ) -> Sequence[ChunkMatch]:
+        """Return the chunks nearest this vector, closest first.
+
+        `score` is cosine similarity, so it means the same thing as the domain's
+        `cosine_similarity` -- pgvector's `<=>` returns the distance, which is
+        one minus it.
+        """
+        if self._dialect_name not in _VECTOR_DIALECTS:
+            raise NotImplementedError(
+                _UNSUPPORTED_VECTOR_MESSAGE.format(dialect=self._dialect_name)
+            )
+
+        distance = KnowledgeChunkModel.embedding.cosine_distance(list(embedding))
+        statement = (
+            select(KnowledgeChunkModel, KnowledgeDocumentModel, distance.label("distance"))
+            .join(
+                KnowledgeDocumentModel,
+                KnowledgeChunkModel.document_id == KnowledgeDocumentModel.document_id,
+            )
+            .where(
+                KnowledgeDocumentModel.is_active.is_(True),
+                KnowledgeChunkModel.embedding_model == embedding_model,
+            )
+        )
+        if category is not None:
+            statement = statement.where(KnowledgeDocumentModel.category == category.value)
+
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                statement.order_by(distance, KnowledgeChunkModel.chunk_id).limit(limit)
+            )
+            return [
+                ChunkMatch(
+                    chunk=knowledge_chunk_from_model(chunk),
+                    document=knowledge_document_from_model(document),
+                    score=1.0 - float(distance_value),
+                )
+                for chunk, document, distance_value in result.all()
+            ]

@@ -97,6 +97,98 @@ export interface paths {
         patch: operations["update_incident_status_api_v1_incidents__incident_id__patch"];
         trace?: never;
     };
+    "/api/v1/knowledge/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the maintenance corpus
+         * @description Return ingested document versions, newest first.
+         *
+         *     Inactive versions are included: they are what an existing citation may still
+         *     resolve to, and a withdrawn procedure is a fact about the corpus rather than
+         *     something to hide from the page that shows it.
+         */
+        get: operations["list_documents_api_v1_knowledge_documents_get"];
+        put?: never;
+        /**
+         * Ingest a parsed document
+         * @description Chunk, embed and store one document version.
+         *
+         *     **Guarded**, because a caller here can rewrite what the Copilot cites. It is
+         *     machine traffic in the same sense the telemetry endpoints are: the ingest
+         *     container holds the token, and a browser never does.
+         *
+         *     The parsing happened in the caller. What arrives is lines with the page they
+         *     came from and the size they were set at, because chunking is a rule and
+         *     rules live here.
+         */
+        post: operations["ingest_document_api_v1_knowledge_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge/documents/{document_key}/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Choose the retrievable version
+         * @description Make one version retrievable, or withdraw the document.
+         *
+         *     `{"version": null}` withdraws it: the document stays readable and stops
+         *     being evidence, which is how a procedure is taken out of the corpus. There
+         *     is no delete for the same reason -- a citation recorded against a version
+         *     must keep resolving after it is superseded.
+         *
+         *     Guarded, because this decides what may be cited. An unguarded version of it
+         *     would let anyone with the hostname change what the Copilot treats as the
+         *     current procedure.
+         */
+        put: operations["set_active_version_api_v1_knowledge_documents__document_key__active_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retrieve maintenance evidence
+         * @description Return the passages that best support an answer to a question.
+         *
+         *     Unguarded, like the dashboard's reads: it is the Copilot's retrieval tool
+         *     and it writes nothing.
+         *
+         *     `sufficient` is the answer to "does the documentation cover this" -- PRD
+         *     section 19 requires the system to say when it does not, rather than answer
+         *     from the nearest passage.
+         */
+        post: operations["search_knowledge_api_v1_knowledge_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/machines": {
         parameters: {
             query?: never;
@@ -441,6 +533,30 @@ export interface components {
          * @enum {string}
          */
         Aggregation: "RAW" | "MEAN" | "MIN" | "MAX";
+        /**
+         * CitationSchema
+         * @description Where a passage came from: PRD section 18's four fields, and a label.
+         */
+        CitationSchema: {
+            /** Document Key */
+            document_key: string;
+            /** Label */
+            label: string;
+            /** Page */
+            page: number;
+            /** Section */
+            section: string;
+            /** Title */
+            title: string;
+            /** Version */
+            version: string;
+        };
+        /**
+         * DocumentCategory
+         * @description The kind of maintenance knowledge a document carries.
+         * @enum {string}
+         */
+        DocumentCategory: "MOTOR_MAINTENANCE_MANUAL" | "BEARING_INSPECTION" | "OVERHEATING_TROUBLESHOOTING" | "VIBRATION_DIAGNOSIS" | "ELECTRICAL_SAFETY" | "PREVENTIVE_MAINTENANCE_SCHEDULE" | "SENSOR_CALIBRATION" | "LUBRICATION" | "STATOR_WINDING_TEST" | "INCIDENT_RESPONSE";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -510,6 +626,54 @@ export interface components {
          */
         IncidentType: "BEARING_DEGRADATION" | "OVERHEATING" | "OVERLOAD" | "UNCLASSIFIED";
         /**
+         * IngestDocumentRequest
+         * @description A parsed document version, ready to be chunked and stored.
+         */
+        IngestDocumentRequest: {
+            /**
+             * Activate
+             * @default false
+             */
+            activate: boolean;
+            /**
+             * Allow Replace
+             * @default false
+             */
+            allow_replace: boolean;
+            category: components["schemas"]["DocumentCategory"];
+            /** Document Key */
+            document_key: string;
+            /**
+             * Is Synthetic
+             * @default true
+             */
+            is_synthetic: boolean;
+            /** Lines */
+            lines: components["schemas"]["TextLineSchema"][];
+            /**
+             * Source Path
+             * @default
+             */
+            source_path: string;
+            /** Title */
+            title: string;
+            /** Version */
+            version: string;
+        };
+        /**
+         * IngestDocumentResponse
+         * @description What the ingest did, so a re-run can report it honestly.
+         */
+        IngestDocumentResponse: {
+            /** Chunk Count */
+            chunk_count: number;
+            document: components["schemas"]["KnowledgeDocumentSchema"];
+            /** Replaced */
+            replaced: boolean;
+            /** Unchanged */
+            unchanged: boolean;
+        };
+        /**
          * IngestResultSchema
          * @description What became of a batch.
          *
@@ -532,6 +696,43 @@ export interface components {
              * @description Machines holding a complete prediction window.
              */
             ready: string[];
+        };
+        /**
+         * KnowledgeDocumentSchema
+         * @description One stored version of one document.
+         */
+        KnowledgeDocumentSchema: {
+            category: components["schemas"]["DocumentCategory"];
+            /** Document Id */
+            document_id: string;
+            /** Document Key */
+            document_key: string;
+            /**
+             * Ingested At
+             * Format: date-time
+             */
+            ingested_at: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Is Synthetic */
+            is_synthetic: boolean;
+            /** Page Count */
+            page_count: number;
+            /** Title */
+            title: string;
+            /** Version */
+            version: string;
+        };
+        /**
+         * KnowledgeMatchSchema
+         * @description One retrieved passage.
+         */
+        KnowledgeMatchSchema: {
+            citation: components["schemas"]["CitationSchema"];
+            /** Content */
+            content: string;
+            /** Score */
+            score: number;
         };
         /**
          * MachineDetailSchema
@@ -682,6 +883,38 @@ export interface components {
          */
         RunStatus: "PENDING" | "RUNNING" | "COMPLETED" | "STOPPED" | "FAILED";
         /**
+         * SearchKnowledgeRequest
+         * @description A maintenance question.
+         */
+        SearchKnowledgeRequest: {
+            category?: components["schemas"]["DocumentCategory"] | null;
+            /** Limit */
+            limit?: number | null;
+            /** Query */
+            query: string;
+            /**
+             * Rerank
+             * @default true
+             */
+            rerank: boolean;
+        };
+        /**
+         * SearchKnowledgeResponse
+         * @description The passages retrieved, and whether they are enough to answer from.
+         *
+         *     `sufficient` is carried rather than left to the client to infer from the
+         *     scores: it is the rule PRD section 19 asks for, and it belongs on the server
+         *     so every client applies the same one.
+         */
+        SearchKnowledgeResponse: {
+            /** Matches */
+            matches: components["schemas"]["KnowledgeMatchSchema"][];
+            /** Reason */
+            reason: string;
+            /** Sufficient */
+            sufficient: boolean;
+        };
+        /**
          * SensorReadingSchema
          * @description The six telemetry signals.
          */
@@ -734,6 +967,14 @@ export interface components {
             bucket_seconds?: number | null;
             /** Is Raw */
             is_raw: boolean;
+        };
+        /**
+         * SetActiveVersionRequest
+         * @description Which version should be retrievable, or none to withdraw the document.
+         */
+        SetActiveVersionRequest: {
+            /** Version */
+            version?: string | null;
         };
         /**
          * SimulationRunSchema
@@ -929,6 +1170,18 @@ export interface components {
             window: components["schemas"]["TimeWindow"];
         };
         /**
+         * TextLineSchema
+         * @description One line of a parsed document, as the ingest container sends it.
+         */
+        TextLineSchema: {
+            /** Font Size */
+            font_size: number;
+            /** Page */
+            page: number;
+            /** Text */
+            text: string;
+        };
+        /**
          * TimeWindow
          * @description A selectable history window.
          * @enum {string}
@@ -1047,6 +1300,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IncidentSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_documents_api_v1_knowledge_documents_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeDocumentSchema"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_document_api_v1_knowledge_documents_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-ingest-token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IngestDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestDocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_active_version_api_v1_knowledge_documents__document_key__active_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-ingest-token"?: string | null;
+            };
+            path: {
+                document_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetActiveVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_knowledge_api_v1_knowledge_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchKnowledgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchKnowledgeResponse"];
                 };
             };
             /** @description Validation Error */

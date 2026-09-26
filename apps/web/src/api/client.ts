@@ -22,6 +22,8 @@ export type ApiPath =
   | '/api/v1/simulations'
   | `/api/v1/simulations/${string}`
   | `/api/v1/simulations/${string}/stop`
+  | '/api/v1/knowledge/documents'
+  | '/api/v1/knowledge/search'
 
 type QueryValue = string | number | boolean | undefined
 

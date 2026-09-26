@@ -1,0 +1,128 @@
+{
+  "questions_version": 1,
+  "questions": [
+    {
+      "id": "bearing-vibration-m003",
+      "question": "Vibration is rising on M003. What should I inspect?",
+      "relevant_document_keys": [
+        "bearing-inspection-sop",
+        "vibration-diagnosis-guide",
+        "lubrication-procedure"
+      ],
+      "expected_phrase": "Attach an accelerometer",
+      "answerable": true
+    },
+    {
+      "id": "bearing-temperature-limit",
+      "question": "At what bearing housing temperature should I be concerned?",
+      "relevant_document_keys": ["bearing-inspection-sop"],
+      "expected_phrase": "exceeding 80",
+      "answerable": true
+    },
+    {
+      "id": "bearing-acoustic-check",
+      "question": "How do I check a bearing by listening to it?",
+      "relevant_document_keys": ["bearing-inspection-sop"],
+      "expected_phrase": "Acoustic Evaluation",
+      "answerable": true
+    },
+    {
+      "id": "stator-insulation-test",
+      "question": "How do I test the stator winding insulation?",
+      "relevant_document_keys": ["stator-winding-test-guide"],
+      "expected_phrase": "Test Voltage",
+      "answerable": true
+    },
+    {
+      "id": "approved-lubricant",
+      "question": "Which grease is approved for electric motor bearings?",
+      "relevant_document_keys": ["lubrication-procedure"],
+      "expected_phrase": "Polyurea",
+      "answerable": true
+    },
+    {
+      "id": "baseline-environment",
+      "question": "What ambient conditions should a motor be installed in?",
+      "relevant_document_keys": ["motor-maintenance-manual"],
+      "expected_phrase": "Ambient Temperature",
+      "answerable": true
+    },
+    {
+      "id": "daily-tasks",
+      "question": "What maintenance tasks are carried out daily?",
+      "relevant_document_keys": ["preventive-maintenance-schedule"],
+      "expected_phrase": "Verify telemetry dashboard",
+      "answerable": true
+    },
+    {
+      "id": "prediction-response",
+      "question": "What should I do when the model predicts a high probability of failure?",
+      "relevant_document_keys": ["incident-response-playbook"],
+      "expected_phrase": "Acknowledge",
+      "answerable": true
+    },
+    {
+      "id": "vibration-severity",
+      "question": "What are the vibration severity thresholds for an industrial motor?",
+      "relevant_document_keys": ["vibration-diagnosis-guide"],
+      "expected_phrase": "ISO 10816",
+      "answerable": true
+    },
+    {
+      "id": "sensor-range",
+      "question": "Which sensor measures vibration, and what range does it cover?",
+      "relevant_document_keys": ["sensor-calibration-manual"],
+      "expected_phrase": "Triaxial Accelerometer",
+      "answerable": true
+    },
+    {
+      "id": "loto-before-maintenance",
+      "question": "How do I make a motor safe before working on it?",
+      "relevant_document_keys": ["electrical-motor-safety", "bearing-inspection-sop"],
+      "expected_phrase": "locked out",
+      "answerable": true
+    },
+    {
+      "id": "overheating-threshold",
+      "question": "When should an overheating investigation start?",
+      "relevant_document_keys": ["overheating-troubleshooting-guide"],
+      "expected_phrase": "85",
+      "answerable": true
+    },
+    {
+      "id": "gearbox-torque-spec",
+      "question": "What is the torque specification for the M003 gearbox output shaft bolts?",
+      "relevant_document_keys": [],
+      "expected_phrase": "",
+      "answerable": false
+    },
+    {
+      "id": "planetary-lubricant",
+      "question": "Which lubricant does the gearbox manufacturer recommend for the planetary stage?",
+      "relevant_document_keys": [],
+      "expected_phrase": "",
+      "answerable": false
+    },
+    {
+      "id": "flow-meter-calibration-interval",
+      "question": "What calibration interval does ISO 17025 require for the plant flow meters?",
+      "relevant_document_keys": [],
+      "expected_phrase": "",
+      "answerable": false
+    },
+    {
+      "id": "chiller-coolant-volume",
+      "question": "How many litres of coolant does the M003 chiller hold?",
+      "relevant_document_keys": [],
+      "expected_phrase": "",
+      "answerable": false
+    },
+    {
+      "id": "stator-spare-part-lead-time",
+      "question": "What is the spare-parts lead time for a replacement M003 stator?",
+      "relevant_document_keys": [],
+      "expected_phrase": "",
+      "answerable": false
+    }
+  ]
+}

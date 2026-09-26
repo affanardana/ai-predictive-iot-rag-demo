@@ -1,0 +1,85 @@
+{
+  "manifest_version": 1,
+  "documents": [
+    {
+      "document_key": "bearing-inspection-sop",
+      "title": "Bearing Inspection SOP",
+      "category": "BEARING_INSPECTION",
+      "version": "1.4",
+      "synthetic": true,
+      "path": "dummy_pdfs/procedure/Bearing Inspection SOP.pdf"
+    },
+    {
+      "document_key": "electrical-motor-safety",
+      "title": "Electrical Motor Safety",
+      "category": "ELECTRICAL_SAFETY",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/safety/Electrical Motor Safety.pdf"
+    },
+    {
+      "document_key": "incident-response-playbook",
+      "title": "Incident Response Playbook",
+      "category": "INCIDENT_RESPONSE",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/playbook/Incident Response Playbook.pdf"
+    },
+    {
+      "document_key": "lubrication-procedure",
+      "title": "Lubrication Procedure",
+      "category": "LUBRICATION",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/procedure/Lubrication Procedure.pdf"
+    },
+    {
+      "document_key": "motor-maintenance-manual",
+      "title": "Motor Maintenance Manual",
+      "category": "MOTOR_MAINTENANCE_MANUAL",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/manual/Motor Maintenance Manual.pdf"
+    },
+    {
+      "document_key": "overheating-troubleshooting-guide",
+      "title": "Overheating Troubleshooting Guide",
+      "category": "OVERHEATING_TROUBLESHOOTING",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/guide/Overheating Troubleshooting Guide.pdf"
+    },
+    {
+      "document_key": "preventive-maintenance-schedule",
+      "title": "Preventive Maintenance Schedule",
+      "category": "PREVENTIVE_MAINTENANCE_SCHEDULE",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/schedule/Preventive Maintenance Schedule.pdf"
+    },
+    {
+      "document_key": "sensor-calibration-manual",
+      "title": "Sensor Calibration Manual",
+      "category": "SENSOR_CALIBRATION",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/manual/Sensor Calibration Manual.pdf"
+    },
+    {
+      "document_key": "stator-winding-test-guide",
+      "title": "Stator Winding Test Guide",
+      "category": "STATOR_WINDING_TEST",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/guide/Stator Winding Test Guide.pdf"
+    },
+    {
+      "document_key": "vibration-diagnosis-guide",
+      "title": "Vibration Diagnosis Guide",
+      "category": "VIBRATION_DIAGNOSIS",
+      "version": "1.0",
+      "synthetic": true,
+      "path": "dummy_pdfs/guide/Vibration Diagnosis Guide.pdf"
+    }
+  ]
+}

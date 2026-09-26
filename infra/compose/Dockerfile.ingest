@@ -1,0 +1,60 @@
+# The corpus ingest, as a one-shot container.
+#
+# It exists so that ingestion does not run on a developer's laptop. That is the
+# same principle Phase 8 applied to the simulator: AC-010 says the demonstration
+# runs without depending on a local computer, and an ingest step that only works
+# from one is a smaller instance of the problem already fixed once.
+#
+# The PDF parser lives here rather than in the API image, which is the other
+# half of the arrangement. `pypdf` in the API would put a parser in the request
+# path on a one-core box, and every change to the chunker -- which is a rule,
+# and lives in the API's domain -- would be an API redeploy. Here it is a
+# container that runs once and exits.
+#
+# The image is not derived from the API's: it needs `ml`, and the API image is
+# deliberately free of everything the demo's offline half brings with it.
+FROM python:3.12-slim
+
+# `PYTHONPATH` covers all three packages this needs: `ml` is installed from
+# source below, and `simulator` is a dependency of it.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src
+
+WORKDIR /app
+
+# The same packages the `ml` workspace member declares, plus the `knowledge`
+# extra. Listed by name rather than `uv sync --all-packages`, for the reason the
+# API's Dockerfile records: the workspace resolves torch from PyPI, which on
+# Linux is the CUDA build, and nothing here needs torch at all.
+RUN pip install --no-cache-dir \
+        "numpy>=2.1" \
+        "pyarrow>=18.0" \
+        "pypdf>=5.1" \
+        "httpx>=0.28"
+
+# `ml` is a package rather than an installed distribution here: there is no
+# index entry for it, and copying it under its import name is what `PYTHONPATH`
+# expects.
+COPY ml/src/ml /app/src/ml
+COPY services/simulator/src/simulator /app/src/simulator
+
+# The manifest and the documents it describes. Both are committed -- the corpus
+# is a fixture, not scratch material -- so the image is self-contained and a
+# build from a clone can ingest without anything being mounted.
+COPY knowledge/corpus.json /app/knowledge/corpus.json
+COPY dummy_pdfs /app/dummy_pdfs
+
+# Not root, and nothing here writes to disk.
+RUN useradd --create-home --uid 10001 pdm
+USER pdm
+
+# `--api-url http://api:8000` is the compose service name, never `localhost`:
+# inside this container that is the ingest container itself, and the failure
+# reads as a refused connection rather than as a wrong address. `--activate` is
+# the default here because a corpus that is ingested but not active is not
+# retrievable, which is rarely what a run of this container wants.
+CMD ["python", "-m", "ml", "knowledge", "ingest", \
+     "--corpus", "knowledge/corpus.json", \
+     "--api-url", "http://api:8000", \
+     "--activate"]

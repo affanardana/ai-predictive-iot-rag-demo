@@ -13,9 +13,12 @@ import { deleteJson, getJson, patchJson, postEmpty, postJson } from '@/api/clien
 import type {
   Incident,
   IncidentStatus,
+  KnowledgeDocument,
   MachineDetail,
   MachineSummary,
   Prediction,
+  SearchKnowledgeRequest,
+  SearchKnowledgeResponse,
   SimulationRun,
   StartSimulationRequest,
   TelemetrySeries,
@@ -46,6 +49,8 @@ export const keys = {
   simulations: () => ['simulations'] as const,
   machineSimulations: (machineId: string) =>
     [...keys.machine(machineId), 'simulations'] as const,
+  knowledge: ['knowledge'] as const,
+  knowledgeDocuments: () => [...keys.knowledge, 'documents'] as const,
 }
 
 /**
@@ -138,6 +143,40 @@ export const machineSimulationsQuery = (machineId: string) =>
     refetchInterval: (query) =>
       query.state.data?.some((run) => run.is_active) ? ACTIVE_RUN_POLL_MS : POLL_INTERVAL_MS,
   })
+
+/**
+ * What the corpus contains.
+ *
+ * Every version, active or not: a withdrawn procedure is a fact about the
+ * corpus rather than something to hide, and the page shows which one is
+ * currently retrievable.
+ */
+export const knowledgeDocumentsQuery = () =>
+  queryOptions({
+    queryKey: keys.knowledgeDocuments(),
+    // No polling. The corpus changes when someone ingests a document, which is
+    // an operator action rather than something that happens on its own -- the
+    // opposite of telemetry, which is why this is the one query without an
+    // interval.
+    queryFn: ({ signal }) =>
+      getJson<KnowledgeDocument[]>('/api/v1/knowledge/documents', undefined, signal),
+  })
+
+/**
+ * Ask the maintenance corpus a question.
+ *
+ * A `POST` because the question is the request body, not because it changes
+ * anything: retrieval writes nothing, which is why the route is unguarded.
+ *
+ * A plain function rather than a query, because a question is asked and not
+ * cached -- re-running the same search after an ingest should hit the server
+ * rather than a stored answer.
+ */
+export function searchMaintenanceKnowledge(
+  body: SearchKnowledgeRequest,
+): Promise<SearchKnowledgeResponse> {
+  return postJson<SearchKnowledgeResponse>('/api/v1/knowledge/search', body)
+}
 
 /** Begin a run. */
 export function startSimulation(body: StartSimulationRequest): Promise<SimulationRun> {

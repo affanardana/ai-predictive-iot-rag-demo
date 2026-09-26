@@ -147,11 +147,16 @@ def test_the_simulator_publishes_no_host_port(
 def test_every_service_has_a_healthcheck(services: dict[str, dict[str, object]]) -> None:
     """Compose reports health, so `depends_on` can mean something.
 
-    `n8n-permissions` is exempt: it is a one-shot `chown` that exits, and
-    `depends_on: service_completed_successfully` is its health signal.
+    Two services are exempt, both one-shot jobs that exit rather than run:
+    `n8n-permissions` is a `chown` whose health signal is
+    `depends_on: service_completed_successfully`, and `ingest` is behind a
+    profile, is started by hand, and reports success by exiting zero. A
+    healthcheck on either would be a check on a process that is supposed to be
+    gone.
     """
+    one_shot = {"n8n-permissions", "ingest"}
     for name, service in services.items():
-        if name == "n8n-permissions":
+        if name in one_shot:
             continue
         assert "healthcheck" in service, f"{name} has no healthcheck"
 

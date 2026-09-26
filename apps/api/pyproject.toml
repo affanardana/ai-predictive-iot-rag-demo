@@ -11,6 +11,12 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
     "psycopg[binary]>=3.2",
     "alembic>=1.14",
+    # The `vector` column type for retrieval (PRD section 25 makes
+    # PostgreSQL/pgvector mandatory). This is the Python side only -- it emits
+    # `vector(384)` and the `<=>` operator; the extension itself is installed by
+    # migration 0003, because a column type that exists in the model but not in
+    # the database fails at the first query rather than at import.
+    "pgvector>=0.3.6",
     # A runtime dependency, not a test one. `HttpPredictor` and the composition
     # root both import it, so an install of `api` without the workspace's dev
     # group fails at `build_container` with `ModuleNotFoundError`. It went

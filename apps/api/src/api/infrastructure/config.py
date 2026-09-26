@@ -86,6 +86,19 @@ class Settings(BaseSettings):
     #: proving to another that it is the expected caller.
     ingest_api_token: str | None = None
 
+    #: The embedding model the corpus was embedded with, name and revision.
+    #: Retrieval only considers chunks carrying this string, and the embedding
+    #: service is refused if it reports running anything else -- vectors from two
+    #: models are not comparable, and mixing them returns plausible nonsense
+    #: with nothing logged.
+    knowledge_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2@main"
+
+    #: Lowest rerank score that counts as evidence, below which the answer is
+    #: "the documentation does not cover this" (PRD section 19). The default is
+    #: deliberately permissive and is meant to be replaced by the value a
+    #: measured run of `ml knowledge evaluate` separates on.
+    knowledge_minimum_score: float = 0.0
+
     risk_warning_threshold: float = DEFAULT_WARNING_THRESHOLD
     risk_high_threshold: float = DEFAULT_HIGH_THRESHOLD
     risk_critical_threshold: float = DEFAULT_CRITICAL_THRESHOLD

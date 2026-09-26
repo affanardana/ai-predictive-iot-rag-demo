@@ -13,10 +13,12 @@ import pytest
 
 from api.domain.errors import (
     IncidentNotFoundError,
+    KnowledgeDocumentNotFoundError,
     PersistenceError,
     SimulationRunNotFoundError,
 )
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
+from api.domain.value_objects.document_category import DocumentCategory
 from api.domain.value_objects.incident_status import IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
@@ -24,8 +26,12 @@ from api.domain.value_objects.run_status import RunStatus
 from api.domain.value_objects.simulation_scenario import SimulationScenario
 from api.domain.value_objects.time_window import Aggregation
 from tests.support.factories import (
+    DEFAULT_EMBEDDING_MODEL,
     DEFAULT_NOW,
+    make_embedding,
     make_incident,
+    make_knowledge_chunk,
+    make_knowledge_document,
     make_machine,
     make_prediction,
     make_reading,
@@ -1235,3 +1241,386 @@ class SimulationRunRepositoryContract:
 
         async with uow_factory() as uow:
             assert await uow.simulations.get("sim-bd-test") is None
+
+
+class KnowledgeRepositoryContract:
+    """Behaviour every `KnowledgeRepository` must exhibit."""
+
+    async def test_get_returns_none_for_an_unknown_document(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """An unknown document is absent, not an error."""
+        async with uow_factory() as uow:
+            assert await uow.knowledge.get_document("bearing-inspection-sop", "9.9") is None
+
+    async def test_round_trips_a_document(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Every persisted field comes back unchanged."""
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(
+                make_knowledge_document(
+                    document_key="lubrication-procedure",
+                    title="Lubrication Procedure",
+                    category=DocumentCategory.LUBRICATION,
+                    version="2.1",
+                    is_active=True,
+                    page_count=3,
+                )
+            )
+
+        async with uow_factory() as uow:
+            document = await uow.knowledge.get_document("lubrication-procedure", "2.1")
+
+        assert document is not None
+        assert document.title == "Lubrication Procedure"
+        assert document.category is DocumentCategory.LUBRICATION
+        assert document.version == "2.1"
+        assert document.page_count == 3
+        assert document.is_active is True
+        assert document.is_synthetic is True
+        assert document.ingested_at == DEFAULT_NOW
+
+    async def test_round_trips_a_chunk_and_its_embedding(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The vector survives storage, dimension for dimension.
+
+        SQLite stores it as JSON and PostgreSQL as a `vector`, so this is the
+        round trip that shows the two agree on what a chunk is.
+        """
+        async with uow_factory() as uow:
+            document = make_knowledge_document()
+            await uow.knowledge.add_document(document)
+            await uow.knowledge.add_chunks(
+                [
+                    make_knowledge_chunk(
+                        document_id=document.document_id,
+                        chunk_index=0,
+                        section="3. Inspection Steps",
+                        page=2,
+                        embedding=make_embedding(0.5, 0.5),
+                    )
+                ]
+            )
+
+        async with uow_factory() as uow:
+            chunks = await uow.knowledge.chunks_for(document.document_id)
+
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk.section == "3. Inspection Steps"
+        assert chunk.page == 2
+        assert chunk.embedding[:2] == pytest.approx((0.5, 0.5))
+        assert len(chunk.embedding) == 384
+
+    async def test_a_second_active_version_is_refused(self, uow_factory: UnitOfWorkFactory) -> None:
+        """At most one version of a key is active, enforced by the schema.
+
+        The in-memory adapter mirrors the partial unique index by hand, so an
+        adapter that let this through would pass in memory and fail in
+        production -- the divergence this suite exists to catch.
+        """
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(make_knowledge_document(version="1.4", is_active=True))
+
+        with pytest.raises(PersistenceError):
+            async with uow_factory() as uow:
+                await uow.knowledge.add_document(
+                    make_knowledge_document(version="2.0", is_active=True)
+                )
+
+    async def test_activating_a_version_supersedes_the_previous_one(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Activation is one statement, so no index is transiently broken."""
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(make_knowledge_document(version="1.4", is_active=True))
+            await uow.knowledge.add_document(make_knowledge_document(version="2.0"))
+
+        async with uow_factory() as uow:
+            await uow.knowledge.activate("bearing-inspection-sop", "2.0")
+
+        async with uow_factory() as uow:
+            old = await uow.knowledge.get_document("bearing-inspection-sop", "1.4")
+            new = await uow.knowledge.get_document("bearing-inspection-sop", "2.0")
+
+        assert old is not None and old.is_active is False
+        assert new is not None and new.is_active is True
+
+    async def test_withdrawing_leaves_no_active_version(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """`activate(key, None)` is how a document leaves the evidence base."""
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(make_knowledge_document(is_active=True))
+
+        async with uow_factory() as uow:
+            await uow.knowledge.activate("bearing-inspection-sop", None)
+
+        async with uow_factory() as uow:
+            document = await uow.knowledge.get_document("bearing-inspection-sop", "1.4")
+
+        assert document is not None
+        assert document.is_active is False
+
+    async def test_activating_an_unknown_version_is_not_found(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A typo in a version must not silently withdraw the document.
+
+        The statement would match every row of the key and deactivate all of
+        them, which is why existence is checked before it runs rather than
+        inferred from its row count.
+        """
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(make_knowledge_document(version="1.4", is_active=True))
+
+        with pytest.raises(KnowledgeDocumentNotFoundError):
+            async with uow_factory() as uow:
+                await uow.knowledge.activate("bearing-inspection-sop", "9.9")
+
+        async with uow_factory() as uow:
+            document = await uow.knowledge.get_document("bearing-inspection-sop", "1.4")
+
+        assert document is not None
+        assert document.is_active is True
+
+    async def test_activating_an_unknown_document_is_not_found(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Withdrawing a document that was never ingested is an error."""
+        with pytest.raises(KnowledgeDocumentNotFoundError):
+            async with uow_factory() as uow:
+                await uow.knowledge.activate("no-such-document", None)
+
+    async def test_list_documents_is_newest_first_and_bounded(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The corpus listing is ordered and bounded."""
+        entries = [
+            ("vibration-diagnosis-guide", "1.0"),
+            ("bearing-inspection-sop", "1.4"),
+            ("lubrication-procedure", "2.1"),
+        ]
+        async with uow_factory() as uow:
+            for index, (key, version) in enumerate(entries):
+                await uow.knowledge.add_document(
+                    make_knowledge_document(
+                        document_key=key,
+                        version=version,
+                        ingested_at=DEFAULT_NOW + timedelta(minutes=index),
+                    )
+                )
+
+        async with uow_factory() as uow:
+            documents = await uow.knowledge.list_documents(limit=2)
+
+        assert [document.document_key for document in documents] == [
+            "lubrication-procedure",
+            "bearing-inspection-sop",
+        ]
+
+    async def test_a_rolled_back_document_and_its_chunks_are_not_stored(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The unit of work discards both tables when the block raises.
+
+        `InMemoryStore.restore` lists every collection by hand, so a new one
+        added to the store but not to `restore` would leave its write behind
+        after a rollback -- passing against PostgreSQL and failing here.
+        """
+        stored_id: str = ""
+        with pytest.raises(RuntimeError):
+            async with uow_factory() as uow:
+                document = make_knowledge_document()
+                stored_id = document.document_id
+                await uow.knowledge.add_document(document)
+                await uow.knowledge.add_chunks(
+                    [make_knowledge_chunk(document_id=document.document_id)]
+                )
+                raise RuntimeError("something went wrong mid-transaction")
+
+        async with uow_factory() as uow:
+            assert await uow.knowledge.get_document("bearing-inspection-sop", "1.4") is None
+            assert await uow.knowledge.chunks_for(stored_id) == []
+
+
+class ChunkSearchContract:
+    """Behaviour every adapter that can rank vectors must exhibit.
+
+    Applied to the in-memory and PostgreSQL adapters. SQLite cannot rank at all
+    -- its chunks are stored as JSON -- and asserts that it raises instead.
+    """
+
+    async def test_returns_the_nearest_chunk_first(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Ranking is by cosine distance, best first."""
+        near = make_knowledge_document(document_key="bearing-inspection-sop", is_active=True)
+        far = make_knowledge_document(
+            document_key="electrical-motor-safety",
+            category=DocumentCategory.ELECTRICAL_SAFETY,
+            is_active=True,
+        )
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(near)
+            await uow.knowledge.add_document(far)
+            await uow.knowledge.add_chunks(
+                [
+                    make_knowledge_chunk(
+                        document_id=far.document_id,
+                        content="Isolate the supply.",
+                        embedding=make_embedding(0.0, 1.0),
+                    ),
+                    make_knowledge_chunk(
+                        document_id=near.document_id,
+                        content="Inspect the bearing.",
+                        embedding=make_embedding(1.0),
+                    ),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            matches = await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=10,
+            )
+
+        assert [match.document.document_key for match in matches] == [
+            "bearing-inspection-sop",
+            "electrical-motor-safety",
+        ]
+        assert matches[0].score == pytest.approx(1.0)
+        assert matches[1].score == pytest.approx(0.0)
+
+    async def test_respects_the_limit(self, uow_factory: UnitOfWorkFactory) -> None:
+        """The candidate bound is what keeps reranking affordable."""
+        async with uow_factory() as uow:
+            document = make_knowledge_document(is_active=True)
+            await uow.knowledge.add_document(document)
+            await uow.knowledge.add_chunks(
+                [
+                    make_knowledge_chunk(
+                        document_id=document.document_id,
+                        chunk_index=index,
+                        content=f"Passage {index}.",
+                    )
+                    for index in range(5)
+                ]
+            )
+
+        async with uow_factory() as uow:
+            matches = await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=3,
+            )
+
+        assert len(matches) == 3
+
+    async def test_an_inactive_documents_chunks_are_never_returned(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Activation is a retrieval rule, not a display flag.
+
+        The withdrawn version carries the *nearest* vector here, so an adapter
+        that ranked first and filtered afterwards, or not at all, would return
+        it.
+        """
+        withdrawn = make_knowledge_document(version="1.4", is_active=False)
+        current = make_knowledge_document(version="2.0", is_active=True)
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(withdrawn)
+            await uow.knowledge.add_document(current)
+            await uow.knowledge.add_chunks(
+                [
+                    make_knowledge_chunk(
+                        document_id=withdrawn.document_id,
+                        content="Withdrawn procedure.",
+                        embedding=make_embedding(1.0),
+                    ),
+                    make_knowledge_chunk(
+                        document_id=current.document_id,
+                        content="Current procedure.",
+                        embedding=make_embedding(0.0, 1.0),
+                    ),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            matches = await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=10,
+            )
+
+        assert [match.chunk.content for match in matches] == ["Current procedure."]
+
+    async def test_filters_by_category(self, uow_factory: UnitOfWorkFactory) -> None:
+        """A category filter narrows the corpus before ranking."""
+        bearing = make_knowledge_document(is_active=True)
+        safety = make_knowledge_document(
+            document_key="electrical-motor-safety",
+            category=DocumentCategory.ELECTRICAL_SAFETY,
+            is_active=True,
+        )
+        async with uow_factory() as uow:
+            await uow.knowledge.add_document(bearing)
+            await uow.knowledge.add_document(safety)
+            await uow.knowledge.add_chunks(
+                [
+                    make_knowledge_chunk(document_id=bearing.document_id, content="Bearing."),
+                    make_knowledge_chunk(document_id=safety.document_id, content="Safety."),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            matches = await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=10,
+                category=DocumentCategory.ELECTRICAL_SAFETY,
+            )
+
+        assert [match.chunk.content for match in matches] == ["Safety."]
+
+    async def test_only_chunks_embedded_by_the_requested_model_are_returned(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Vectors from two models are not comparable, so they are not mixed."""
+        async with uow_factory() as uow:
+            document = make_knowledge_document(is_active=True)
+            await uow.knowledge.add_document(document)
+            await uow.knowledge.add_chunks(
+                [
+                    make_knowledge_chunk(
+                        document_id=document.document_id,
+                        chunk_index=0,
+                        content="Old model.",
+                        embedding_model="sentence-transformers/all-MiniLM-L6-v2@old",
+                    ),
+                    make_knowledge_chunk(
+                        document_id=document.document_id,
+                        chunk_index=1,
+                        content="Current model.",
+                    ),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            matches = await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=10,
+            )
+
+        assert [match.chunk.content for match in matches] == ["Current model."]
+
+    async def test_an_empty_corpus_returns_nothing(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Nothing stored is an empty result, not an error."""
+        async with uow_factory() as uow:
+            matches = await uow.knowledge.similar_chunks(
+                make_embedding(1.0),
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                limit=10,
+            )
+
+        assert matches == []

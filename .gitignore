@@ -1,8 +1,18 @@
 # All the document regarding specification set (spec-driven development) must be local-only, never published
 spec_driven_development/
 
-# Dummy pdf(s) for RAG
-dummy_pdfs/
+# The maintenance corpus (Phase 9). Committed deliberately, and it was ignored
+# until Phase 9 -- at which point the PDFs stopped being scratch material and
+# became a fixture: the extraction tests parse them, the ingest pipeline reads
+# them, and the retrieval evaluation is scored against their content. A clone
+# without them cannot run the corpus tests, ingest anything, or reproduce the
+# evaluation numbers.
+#
+# Ten PDFs, 624 KB. They were printed from a browser (`/Creator: Chromium`) and
+# nothing in this repository generates them, so they are the only copy.
+#
+# See `knowledge/corpus.json` for the manifest that maps each file to its
+# document key, category and version.
 
 # The detailed working README. `README.md` is the short version shown on the
 # repository page; this one is the full reference for whoever is working in the

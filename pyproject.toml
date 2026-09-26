@@ -183,6 +183,23 @@ ignore_missing_imports = true
 module = ["yaml", "yaml.*"]
 ignore_missing_imports = true
 
+# pgvector is a core dependency of `api`, but it is imported by one module (the
+# chunk model) and its types are thin around SQLAlchemy's column machinery.
+[[tool.mypy.overrides]]
+module = ["pgvector", "pgvector.*"]
+ignore_missing_imports = true
+
+# pypdf and sentence-transformers are optional extras: `ml[knowledge]` and the
+# inference service's own. Neither is installed in the default environment, so
+# mypy has to pass without them -- the same reasoning as torch and paho above.
+[[tool.mypy.overrides]]
+module = ["pypdf", "pypdf.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers", "sentence_transformers.*"]
+ignore_missing_imports = true
+
 # ===========================================================================
 # pytest
 # ===========================================================================
