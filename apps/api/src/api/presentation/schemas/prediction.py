@@ -1,4 +1,4 @@
-"""Prediction response schema."""
+"""Prediction schemas."""
 
 from __future__ import annotations
 

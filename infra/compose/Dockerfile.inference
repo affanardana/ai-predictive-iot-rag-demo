@@ -1,0 +1,68 @@
+# The model service, as a container.
+#
+# Translated from `services/inference/modal_app.py`, and the important line
+# there is the one that is easy to lose in translation.
+#
+# ## torch comes from the CPU index
+#
+# `pip install torch` with no index resolves to PyPI, which on Linux is the CUDA
+# build. Its dependency set -- `nvidia-cudnn-cu13`, `nvidia-cublas`, `triton`,
+# `cuda-toolkit` and fifteen others, every one carrying a
+# `sys_platform == 'linux'` marker -- is roughly 2.9 GB of download and 6-8 GB
+# unpacked.
+#
+# Those markers are false on the Windows development machine, so the local
+# virtualenv holds a 124 MB wheel and nothing else and the problem is invisible
+# from there. It only appears on the Linux host. `uv.lock` compounds it: the
+# lock resolves torch from `registry = "https://pypi.org/simple"`, so
+# `uv sync --all-packages` would pull the whole CUDA set, which is why this
+# image installs by name instead.
+#
+# The model is two LSTM layers and a linear head, scored on CPU in a 60-step
+# forward pass over a 1.5 MB checkpoint. The CUDA wheel is roughly ten times the
+# size for compute this service does not use.
+#
+# ## The sources are mounted at their import names
+#
+# The three packages live under `src/` in the repository, which is not a layout
+# Python finds on its own, so each is copied to the name it is imported by and
+# `PYTHONPATH` does the rest. Same as the Modal image, for the same reason.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src \
+    INFERENCE_CHECKPOINT=/model/best.pt \
+    INFERENCE_ARTIFACT_DIR=/model/artifact
+
+WORKDIR /app
+
+# Separate from the line below so the CPU index applies to torch alone. Putting
+# them together would send every other package to the PyTorch index too.
+RUN pip install --no-cache-dir torch \
+        --index-url https://download.pytorch.org/whl/cpu
+
+RUN pip install --no-cache-dir \
+        "fastapi>=0.115" \
+        "uvicorn[standard]>=0.32" \
+        "numpy>=2.1" \
+        "pyarrow>=18.0" \
+        "httpx>=0.28"
+
+COPY ml/src/ml /app/src/ml
+COPY services/simulator/src/simulator /app/src/simulator
+COPY services/inference/src/inference /app/src/inference
+
+# Not root. The model is a read-only bind mount, and nothing here writes to
+# disk at all.
+RUN useradd --create-home --uid 10001 pdm
+USER pdm
+
+EXPOSE 8001
+
+# `--factory` because `create_app` builds the application rather than exposing a
+# module-level instance -- the scorer is constructed in the lifespan, so the
+# service refuses to start rather than starting degraded when the checkpoint is
+# missing. That fail-fast is deliberate: `Settings.from_environment()` raises
+# before the port ever opens.
+CMD ["uvicorn", "inference.app:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8001"]

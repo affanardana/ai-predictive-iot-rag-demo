@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     #: and the suite runs entirely on in-memory SQLite.
     test_database_url: str | None = None
 
+    #: Where the model inference service lives. The API calls it over HTTP so
+    #: that torch stays out of this process and out of its container image.
+    inference_service_url: str = "http://localhost:8001"
+
+    #: Shared secret the orchestrator presents on the write endpoints. Required
+    #: outside `local`; see `_validate_consistency`. This is deliberately not a
+    #: user authentication scheme -- Phase 11 owns that -- it is one machine
+    #: proving to another that it is the expected caller.
+    ingest_api_token: str | None = None
+
     risk_warning_threshold: float = DEFAULT_WARNING_THRESHOLD
     risk_high_threshold: float = DEFAULT_HIGH_THRESHOLD
     risk_critical_threshold: float = DEFAULT_CRITICAL_THRESHOLD
@@ -80,6 +90,35 @@ class Settings(BaseSettings):
         # Constructing the value object validates ordering and bounds, so a
         # contradictory threshold configuration fails at startup.
         _ = self.risk_thresholds
+
+        # Required in *every* environment except local, rather than in
+        # production alone. `app_env` defaults to "local", so gating on
+        # `is_production` would mean a deployment that forgot to set APP_ENV
+        # failed open -- running unauthenticated while looking configured.
+        if self.app_env != "local" and not self.ingest_api_token:
+            raise ValueError(
+                "INGEST_API_TOKEN is required when APP_ENV is not 'local'. The "
+                "write endpoints are reachable from the internet and are the "
+                "only way telemetry and machines enter the database, so an "
+                "unauthenticated deployment lets anyone write readings."
+            )
+
+        if self.ingest_api_token is not None:
+            # A blank secret is not a secret: `compare_digest("", "")` is true,
+            # so an empty token would authenticate a request carrying no header
+            # at all.
+            if not self.ingest_api_token.strip():
+                raise ValueError("INGEST_API_TOKEN must not be blank.")
+            # HTTP header values are byte strings. A token outside ASCII could
+            # never be presented by any client, so it would refuse every
+            # request -- a misconfiguration best caught here rather than
+            # diagnosed from a wall of 401s.
+            if not self.ingest_api_token.isascii():
+                raise ValueError(
+                    "INGEST_API_TOKEN must be ASCII. Header values are byte "
+                    "strings and cannot carry a non-ASCII character, so this "
+                    "token could never be presented."
+                )
         return self
 
     @property

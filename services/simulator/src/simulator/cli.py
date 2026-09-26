@@ -8,6 +8,7 @@ built.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -27,12 +28,16 @@ from simulator.domain.scenario import Scenario, profile_for
 from simulator.domain.session import SimulationSession
 from simulator.domain.timestamps import utc_now
 from simulator.infrastructure.sinks import (
+    BrokerSettings,
     ConsoleGroundTruthSink,
     ConsoleTelemetrySink,
+    DiscardingGroundTruthSink,
     JsonLinesGroundTruthSink,
     JsonLinesTelemetrySink,
+    MqttTelemetrySink,
     ParquetGroundTruthSink,
     ParquetTelemetrySink,
+    connect_paho,
 )
 
 DEFAULT_MACHINE_COUNT = 3
@@ -42,6 +47,17 @@ DEFAULT_TICK_SECONDS = 0.2
 
 DATASET_OUTPUT_DIR = Path("data/raw")
 REALTIME_OUTPUT_DIR = Path("data/stream")
+
+#: EMQX's public broker needs no credentials and carries a publicly trusted
+#: certificate, so the defaults are a working pipeline rather than a stub.
+DEFAULT_MQTT_HOST = "broker.emqx.io"
+DEFAULT_MQTT_PORT = 8883
+
+#: The topic tree telemetry is published under. On a shared public broker this
+#: prefix is the only isolation there is -- anyone may subscribe to it or
+#: publish into it -- so it is configuration rather than a constant, and n8n
+#: subscribes to the same value. `infra/n8n/README.md` says so.
+DEFAULT_MQTT_TOPIC_PREFIX = "pdm/demo"
 
 #: Overwritten by `--demo`, so the demonstrated sequence is always the same one.
 _FALLBACK_MACHINE_ID = "M001"
@@ -114,9 +130,19 @@ def build_parser() -> argparse.ArgumentParser:
     realtime.add_argument("--seed", type=int, default=None)
     realtime.add_argument("--minutes", type=int, default=None)
     realtime.add_argument("--tick-seconds", type=float, default=DEFAULT_TICK_SECONDS)
-    realtime.add_argument("--sink", choices=("console", "jsonl"), default="console")
+    realtime.add_argument("--sink", choices=("console", "jsonl", "mqtt"), default="console")
     realtime.add_argument("--out", type=Path, default=REALTIME_OUTPUT_DIR)
     realtime.add_argument("--started-at", type=_parse_instant, default=None, help=_STARTED_AT_HELP)
+    realtime.add_argument(
+        "--session-id",
+        default=None,
+        help=(
+            "Name this run. Derived from the scenario and seed by default, so "
+            "re-running with the same seed republishes the same event ids and "
+            "the pipeline stores nothing new -- which is idempotency working, "
+            "not a fault. Pass a new id to ingest the series a second time."
+        ),
+    )
     realtime.add_argument(
         "--demo",
         action="store_true",
@@ -191,8 +217,9 @@ def _run_realtime(args: argparse.Namespace) -> int:
         seed=seed,
         duration=duration,
         started_at=args.started_at or utc_now(),
+        session_id=args.session_id,
     )
-    telemetry_sink, ground_truth_sink = _realtime_sinks(args)
+    telemetry_sink, ground_truth_sink = _realtime_sinks(args, session)
 
     print(
         f"streaming {session.session_id}  scenario={scenario.value}  "
@@ -212,7 +239,15 @@ def _run_realtime(args: argparse.Namespace) -> int:
         print("\ninterrupted", file=sys.stderr)
         return EXIT_INTERRUPTED
 
-    _report([("observations", str(summary.total_samples))], stream=sys.stderr)
+    # Both sinks are closed by `stream_session`'s `finally`, so the counts here
+    # are final. Publish failures are reported even at zero: a silent zero and
+    # a missing line look the same, and only one of them means "nothing was
+    # dropped".
+    rows = [("observations", str(summary.total_samples))]
+    if isinstance(telemetry_sink, MqttTelemetrySink):
+        rows.append(("published to", f"{telemetry_sink.topic_prefix}/{{machine}}/telemetry"))
+        rows.append(("publish failures", str(telemetry_sink.failures)))
+    _report(rows, stream=sys.stderr)
     return 0
 
 
@@ -267,11 +302,42 @@ def _file_sinks(directory: Path, file_format: str) -> tuple[TelemetrySink, Groun
     )
 
 
-def _realtime_sinks(args: argparse.Namespace) -> tuple[TelemetrySink, GroundTruthSink]:
+def _realtime_sinks(
+    args: argparse.Namespace, session: SimulationSession
+) -> tuple[TelemetrySink, GroundTruthSink]:
     """Build the sinks a realtime run writes to."""
     if args.sink == "console":
         return ConsoleTelemetrySink(), ConsoleGroundTruthSink()
+    if args.sink == "mqtt":
+        settings = _broker_settings(session.session_id)
+        # Ground truth is not published; see `DiscardingGroundTruthSink`.
+        return (
+            MqttTelemetrySink(connect_paho(settings), settings.topic_prefix),
+            DiscardingGroundTruthSink(),
+        )
     return _file_sinks(args.out, "jsonl")
+
+
+def _broker_settings(session_id: str) -> BrokerSettings:
+    """Read broker settings from the environment.
+
+    From the environment rather than the command line because one of them is a
+    password: a credential in `argv` is a credential in the shell history and in
+    every process listing. Everything else follows the same route for
+    consistency, and the defaults are EMQX's public broker.
+    """
+    return BrokerSettings(
+        host=os.environ.get("MQTT_HOST", DEFAULT_MQTT_HOST),
+        port=int(os.environ.get("MQTT_PORT", DEFAULT_MQTT_PORT)),
+        tls=os.environ.get("MQTT_TLS", "true").strip().lower() not in {"0", "false", "no"},
+        username=os.environ.get("MQTT_USERNAME") or None,
+        password=os.environ.get("MQTT_PASSWORD") or None,
+        topic_prefix=os.environ.get("MQTT_TOPIC_PREFIX", DEFAULT_MQTT_TOPIC_PREFIX),
+        # Derived from the session, so two runs cannot collide. paho's default
+        # is random, and a duplicate client id has the broker evict one of the
+        # two connections rather than refusing the second.
+        client_id=f"pdm-sim-{session_id}",
+    )
 
 
 def _report(rows: Sequence[tuple[str, str]], stream: TextIO | None = None) -> None:

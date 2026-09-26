@@ -3,7 +3,11 @@ name = "ai-predictive-maintenance"
 version = "0.2.0"
 description = "AI Predictive Maintenance & Maintenance Copilot for industrial electric motors"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+# `>=3.12,<3.14`, not `<3.13`. The code runs on 3.13 -- the Phase 4 training
+# run was on Colab, which ships 3.13.15 -- but the pin excluded it, so `pip
+# install` refused to build the workspace there before reading a line of code.
+# CI still runs 3.12, so the drift was invisible from here.
+requires-python = ">=3.12,<3.14"
 dependencies = []
 
 # The workspace root is a virtual project: it is not built or published, it
@@ -12,7 +16,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "services/simulator", "ml"]
+members = ["apps/api", "services/simulator", "services/inference", "ml"]
 
 # Dev tooling is shared across every workspace member.
 [dependency-groups]
@@ -24,6 +28,7 @@ dev = [
     "import-linter>=2.1",
     "httpx>=0.28",
     "aiosqlite>=0.20",
+    "modal>=1.5.5",
 ]
 
 # ===========================================================================
@@ -36,6 +41,7 @@ src = [
     "apps/api/src",
     "apps/api/tests",
     "services/simulator/src",
+    "services/inference/src",
     "ml/src",
 ]
 # `ml/notebooks` is excluded because ruff lints `.ipynb` files by default
@@ -69,7 +75,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "ANN001", "ANN201", "ANN202", "D102", "D103"]
+# S105/S106 flag hardcoded credentials. A test that needs to prove a shared
+# secret is checked has to name one, and a literal in a test file is not a
+# secret -- the real value comes from the environment and never reaches here.
+"**/tests/**" = ["S101", "S105", "S106", "ANN001", "ANN201", "ANN202", "D102", "D103"]
 "**/migrations/**" = ["D", "ANN", "E501", "S105"]
 # S311 warns that a pseudo-random generator is unsuitable for cryptographic use.
 # In the simulator there is nothing to protect and reproducibility is the
@@ -87,14 +96,14 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "ml", "simulator"]
+known-first-party = ["api", "inference", "ml", "simulator"]
 
 # ===========================================================================
 # mypy
 # ===========================================================================
 [tool.mypy]
 python_version = "3.12"
-mypy_path = ["apps/api/src", "services/simulator/src", "ml/src"]
+mypy_path = ["apps/api/src", "services/simulator/src", "services/inference/src", "ml/src"]
 # Every workspace member must be listed. `uv run mypy` with no arguments uses
 # `files`, so a member missing from here is never type-checked and CI still
 # passes — a silent gap rather than a failing build.
@@ -102,6 +111,7 @@ files = [
     "apps/api/src",
     "apps/api/tests",
     "services/simulator/src",
+    "services/inference/src",
     "ml/src",
 ]
 strict = true
@@ -112,7 +122,7 @@ plugins = ["pydantic.mypy"]
 # still type-checked so hand-written fakes are validated against the real
 # repository Protocols.
 [[tool.mypy.overrides]]
-module = ["tests.*", "simulator.tests.*", "ml.tests.*"]
+module = ["tests.*", "simulator.tests.*", "inference.tests.*", "ml.tests.*"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false
 disallow_any_generics = false
@@ -138,6 +148,12 @@ ignore_missing_imports = true
 module = ["torch", "torch.*"]
 ignore_missing_imports = true
 
+# Same again for paho. The simulator's MQTT transport is an optional extra and
+# CI does not install it, so `uv run mypy` has to pass without it.
+[[tool.mypy.overrides]]
+module = ["paho", "paho.*"]
+ignore_missing_imports = true
+
 # ===========================================================================
 # pytest
 # ===========================================================================
@@ -153,23 +169,27 @@ ignore_missing_imports = true
 testpaths = [
     "apps/api/tests",
     "services/simulator/src/simulator/tests",
+    "services/inference/src/inference/tests",
     "ml/src/ml/tests",
 ]
-pythonpath = ["apps/api/src", "services/simulator/src", "ml/src"]
+pythonpath = ["apps/api/src", "services/simulator/src", "services/inference/src", "ml/src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-# The default run is offline and torch-free: `postgres`- and `torch`-marked
-# tests deselect unless the caller asks for them explicitly (a later `-m` wins
-# over this one).
+# The default run is offline and torch-free: `postgres`-, `torch`- and
+# `mqtt`-marked tests deselect unless the caller asks for them explicitly (a
+# later `-m` wins over this one).
 #
 # `torch` has to be named here and not merely declared in `markers`. A marker
 # alone only lets a test be *selected*; with `-m 'not postgres'` still in force,
 # the torch tests would be collected and run in the default offline job, where
-# torch is not installed, and would fail rather than deselect.
-addopts = "-m 'not postgres and not torch' --strict-markers --strict-config"
+# torch is not installed, and would fail rather than deselect. `mqtt` has the
+# same problem for the same reason: its tests need a broker and the simulator's
+# `mqtt` extra, neither of which the offline job has.
+addopts = "-m 'not postgres and not torch and not mqtt' --strict-markers --strict-config"
 markers = [
     "postgres: requires a live PostgreSQL database; set TEST_DATABASE_URL to run",
     "torch: requires the training extra (`uv sync --all-packages --all-extras`)",
+    "mqtt: requires a live broker; set MQTT_BROKER_URL and install the `mqtt` extra",
 ]
 log_cli_level = "WARNING"
 
@@ -179,7 +199,7 @@ log_cli_level = "WARNING"
 # This is where the architecture stops being a convention and becomes a gate.
 # ===========================================================================
 [tool.importlinter]
-root_packages = ["api", "ml", "simulator"]
+root_packages = ["api", "inference", "ml", "simulator"]
 # Required so the forbidden contracts below can name third-party packages.
 include_external_packages = true
 
@@ -349,11 +369,28 @@ forbidden_modules = [
     "torch",
 ]
 
+# `services/inference` is a deployable of its own, running in a different
+# container from the API. The API calls it over HTTP and owns the domain rules;
+# an import added here for convenience would silently make one deployment depend
+# on the other's, which is exactly the coupling the split exists to prevent.
+[[tool.importlinter.contracts]]
+name = "The inference service does not depend on the API"
+type = "forbidden"
+source_modules = ["inference"]
+forbidden_modules = [
+    "api",
+    "alembic",
+    "psycopg",
+    "pydantic_settings",
+    "sqlalchemy",
+]
+
 [[tool.importlinter.contracts]]
 name = "Simulator domain is self-contained"
 type = "forbidden"
 source_modules = ["simulator.domain"]
 forbidden_modules = [
+    "paho",
     "pyarrow",
     "simulator.application",
     "simulator.cli",

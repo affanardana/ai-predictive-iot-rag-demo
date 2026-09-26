@@ -14,10 +14,12 @@ from api.domain.errors import (
     DomainError,
     DomainValidationError,
     IncidentNotFoundError,
+    InsufficientTelemetryHistoryError,
     InvalidIncidentTransitionError,
     InvalidTelemetryError,
     MachineNotFoundError,
     PersistenceError,
+    PredictionUnavailableError,
     RepositoryUnavailableError,
 )
 
@@ -37,8 +39,17 @@ ERROR_CATALOG: Mapping[type[DomainError], ErrorMapping] = {
     # the incident's current state simply does not permit the move.
     InvalidIncidentTransitionError: ErrorMapping(409, "invalid_incident_transition"),
     InvalidTelemetryError: ErrorMapping(422, "invalid_telemetry"),
+    # The request was fine and the machine exists; its history is too short to
+    # build a window. Mapped explicitly rather than left to the MRO walk, which
+    # would otherwise report it as a 400 `domain_error` and tell a caller
+    # nothing about what to do next.
+    InsufficientTelemetryHistoryError: ErrorMapping(422, "insufficient_history"),
     DomainValidationError: ErrorMapping(422, "invalid_value"),
     RepositoryUnavailableError: ErrorMapping(503, "repository_unavailable"),
+    # A dependency outage, not our fault and not the caller's. 503 says the
+    # request was fine and the system could not answer, which is what lets a
+    # caller retry instead of treating it as a bad request.
+    PredictionUnavailableError: ErrorMapping(503, "inference_unavailable"),
     PersistenceError: ErrorMapping(500, "persistence_error"),
     DomainError: ErrorMapping(400, "domain_error"),
 }

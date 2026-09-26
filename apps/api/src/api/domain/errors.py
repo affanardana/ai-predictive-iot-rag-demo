@@ -44,6 +44,35 @@ class InvalidTelemetryError(DomainError):
     """Raised when a telemetry record violates a domain invariant."""
 
 
+class PredictionUnavailableError(DomainError):
+    """Inference could not be performed.
+
+    Raised when the model service is unreachable, refuses the request, or
+    answers with something that is not a probability. It exists so a dependency
+    outage is reported as a dependency outage rather than as an internal error:
+    the request was well formed, the machine exists, and the system could not
+    answer.
+    """
+
+
+class InsufficientTelemetryHistoryError(DomainError):
+    """There are too few stored readings to build a prediction window.
+
+    Not a `DomainValidationError`: the request was well formed and the machine
+    exists. What is lacking is the machine's own history, which is a state
+    conflict rather than a malformed value.
+
+    The counts go in the message because the error envelope's `details` field is
+    `dict[str, str]` and the domain-error handler passes none -- the same
+    phrasing the inference service uses for the same condition.
+    """
+
+    def __init__(self, have: int, need: int) -> None:
+        self.have = have
+        self.need = need
+        super().__init__(f"A prediction needs {need} readings of history and {have} arrived.")
+
+
 class InvalidIncidentTransitionError(DomainError):
     """Raised when an incident status transition is not permitted."""
 

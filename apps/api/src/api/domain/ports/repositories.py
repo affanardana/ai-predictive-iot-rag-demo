@@ -60,6 +60,32 @@ class TelemetryRepository(Protocol):
         """Return the most recent record for a machine."""
         ...
 
+    async def latest_records(self, machine_id: MachineId, limit: int) -> Sequence[TelemetryRecord]:
+        """Return the most recent `limit` measurements, oldest first.
+
+        Count-bounded rather than time-bounded, which is what makes it usable
+        as a model input: the classifier needs 60 consecutive *readings*, and a
+        60-minute window is a different thing whenever a reading is missing.
+
+        It is also the only correct option under the simulator's playback mode.
+        `recorded_at` advances 300x faster than the wall clock there, so a range
+        computed from `clock.now()` selects nothing. This method never
+        consults a clock.
+
+        Returns fewer than `limit` when the history is short, rather than
+        raising -- the caller decides whether that is enough.
+        """
+        ...
+
+    async def count_for(self, machine_id: MachineId) -> int:
+        """Return how many measurements are stored for a machine.
+
+        Separate from `latest_records` because readiness is a question about a
+        count, and answering it by fetching 60 rows to measure their length
+        transfers data to compute a number the database already knows.
+        """
+        ...
+
     async def window_raw(
         self,
         machine_id: MachineId,

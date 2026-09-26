@@ -1,0 +1,205 @@
+# The self-hosted backend.
+#
+# Three services plus a TLS terminator, on one VPS. PostgreSQL stays on Supabase
+# and the broker stays at `broker.emqx.io`, so neither of those is a container
+# here -- which is most of why this fits on a single core.
+#
+# Bring it up from this directory:
+#
+#     cp env.template .env     # then fill it in
+#     docker compose up -d --build
+#
+# `infra/compose/README.md` is the runbook, including the model artefacts that
+# have to be copied to the host before the inference service will start.
+
+name: pdm
+
+services:
+  # ---------------------------------------------------------------------------
+  # The API.
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      # The context is the repository root, not this directory: the Dockerfile
+      # copies `apps/api/...` and needs those paths to exist below it.
+      context: ../..
+      dockerfile: infra/compose/Dockerfile.api
+    restart: unless-stopped
+    # Deliberately NOT `env_file: .env`.
+    #
+    # `Settings` is declared with `extra="forbid"`, so an unknown variable is a
+    # startup failure rather than a typo that quietly takes a default. The
+    # server's `.env` also holds n8n's encryption key, the MQTT credentials and
+    # the workflow's tokens -- passing all of that in would kill the container
+    # with a validation error about a variable it has no business knowing.
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required -- see env.template}
+      INGEST_API_TOKEN: ${INGEST_API_TOKEN:?INGEST_API_TOKEN is required}
+      # The service name, never localhost. `Settings` defaults this to
+      # `http://localhost:8001`, which inside this container is the API itself,
+      # and the failure looks like a cold model rather than a config error.
+      INFERENCE_SERVICE_URL: http://inference:8001
+      RISK_WARNING_THRESHOLD: ${RISK_WARNING_THRESHOLD:-0.30}
+      RISK_HIGH_THRESHOLD: ${RISK_HIGH_THRESHOLD:-0.60}
+      RISK_CRITICAL_THRESHOLD: ${RISK_CRITICAL_THRESHOLD:-0.80}
+    healthcheck:
+      # Readiness, not liveness. The engine is lazy, so the API starts happily
+      # while Supabase is still unreachable -- this is what stops n8n from
+      # calling it before it can actually answer.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              ok = urllib.request.urlopen(
+                  "http://127.0.0.1:8000/health/ready", timeout=5
+              ).status == 200
+          except Exception:
+              ok = False
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # The API reaches a database on another provider over the internet, so a
+      # slow first check is expected rather than a fault.
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # The model service.
+  # ---------------------------------------------------------------------------
+  inference:
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile.inference
+    restart: unless-stopped
+    volumes:
+      # Two files the image cannot contain: `best.pt` and
+      # `artifact/normalization.json` are gitignored, so a build from a clone
+      # has no way to include them -- and they change whenever the model is
+      # retrained, which should not require rebuilding an image.
+      #
+      # Read-only. This service scores windows and writes nothing.
+      - ${MODEL_DIR:-./model}:/model:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              ok = urllib.request.urlopen(
+                  "http://127.0.0.1:8001/health", timeout=5
+              ).status == 200
+          except Exception:
+              ok = False
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Importing torch and loading the checkpoint takes a while on one core,
+      # and the service refuses to open its port until the scorer exists. The
+      # Modal deployment needed `startup_timeout=300` for the same reason.
+      start_period: 180s
+
+  # ---------------------------------------------------------------------------
+  # n8n, the orchestrator.
+  # ---------------------------------------------------------------------------
+  n8n:
+    # Pinned, and worth keeping pinned. Changing this tag changes the Node
+    # version, the node library and the editor simultaneously, with no diff to
+    # review.
+    image: docker.io/n8nio/n8n:1.115.3
+    restart: unless-stopped
+    # No image build, no entrypoint overrides, no Python installed. Every one of
+    # those existed in `infra/n8n/modal_app.py` only because a Modal function is
+    # Python code that had to shell out to a Node application. A container runs
+    # the official image's own entrypoint, so all of it goes.
+    environment:
+      N8N_USER_FOLDER: /data
+      N8N_PORT: "5678"
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      # Caddy terminates TLS in front of this container, so these stay on.
+      # Setting `N8N_PROTOCOL=http` behind an HTTPS proxy produces redirect
+      # loops and non-secure cookies on an internet-facing admin editor.
+      N8N_PROTOCOL: https
+      N8N_SECURE_COOKIE: "true"
+      # Load-bearing. The workflow reads its API URL and token through `$env`,
+      # and n8n blocks environment access from nodes by default -- without this
+      # both expressions resolve to `undefined` and every request 404s against
+      # a host that is not there.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # Set from first boot, which is the opposite of the advice for Modal and
+      # correct here. n8n generates a key on first boot if none is given, and
+      # refuses to start if an environment variable later disagrees with the
+      # stored one. Providing it up front means it lives in `.env` where it can
+      # be backed up, rather than being trapped in a Docker volume that is the
+      # only copy.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY is required}
+      # Read by the workflow, not by n8n.
+      PDM_API_BASE_URL: https://api.${PDM_HOST:?PDM_HOST is required}
+      # Must byte-equal the API's INGEST_API_TOKEN. They are the same secret
+      # under two names because two different systems read them, and a mismatch
+      # is a 401 on every write.
+      PDM_INGEST_TOKEN: ${INGEST_API_TOKEN:?INGEST_API_TOKEN is required}
+      # Telemetry arrives at roughly one message per second per machine. Keeping
+      # an execution record for every successful one grows the SQLite file
+      # without ever being read; failures are kept, because a failure is the
+      # thing worth looking at.
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: none
+      EXECUTIONS_DATA_SAVE_ON_ERROR: all
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "168"
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+    volumes:
+      # n8n's SQLite database and its encrypted credentials. A named volume
+      # rather than a bind mount: it is the one piece of state here that is not
+      # reproducible from the repository, and it has to survive a rebuild.
+      - n8n-data:/data
+    healthcheck:
+      # Alpine, so BusyBox `wget` is available and no extra package is needed.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # TLS and the only thing exposed to the internet.
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: docker.io/library/caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # `sslip.io` resolves any hostname containing an IP address to that IP, so
+      # these need no DNS records and no domain registration. Because they are
+      # real public hostnames, Caddy's default HTTP-01 challenge obtains a real
+      # Let's Encrypt certificate for them and browsers trust it.
+      #
+      # Buying a domain later is a one-line change here and nothing else.
+      PDM_HOST: ${PDM_HOST:?PDM_HOST is required}
+      API_HOST: api.${PDM_HOST:?PDM_HOST is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing this volume means re-issuing,
+      # which Let's Encrypt rate-limits -- so it is a named volume rather than
+      # sitting in the container's writable layer.
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  n8n-data:
+  caddy-data:
+  caddy-config:

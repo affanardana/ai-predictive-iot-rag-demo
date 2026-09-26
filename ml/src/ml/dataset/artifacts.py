@@ -302,7 +302,6 @@ def write_artifact(directory: Path, dataset: Dataset) -> None:
 def read_artifact(directory: Path) -> Dataset:
     """Load an artifact written by `write_artifact`."""
     machines = json.loads((directory / MACHINES_FILENAME).read_text(encoding="utf-8"))
-    normalization = json.loads((directory / NORMALIZATION_FILENAME).read_text(encoding="utf-8"))
     return Dataset(
         # Memory-mapped: the signals are read in windows, and a training run
         # should not have to hold the whole fleet in RAM to look at one life.
@@ -313,13 +312,25 @@ def read_artifact(directory: Path) -> Dataset:
         life_onset=np.load(directory / LIFE_ONSET_FILENAME),
         machine_ids=tuple(item["machine_id"] for item in machines["machines"]),
         splits=tuple(Split(item["split"]) for item in machines["machines"]),
-        normalization=Normalization(
-            means=np.asarray(normalization["mean"], dtype=np.float64),
-            stds=np.asarray(normalization["std"], dtype=np.float64),
-            source_split=Split(normalization["computed_from"]["split"]),
-            source_machines=int(normalization["computed_from"]["machines"]),
-            source_rows=int(normalization["computed_from"]["rows"]),
-        ),
+        normalization=read_normalization(directory),
+    )
+
+
+def read_normalization(directory: Path) -> Normalization:
+    """Read only the standardisation statistics.
+
+    The inference service needs these and nothing else from the artifact — the
+    signals it standardises arrive in the request. Reading the whole 58 MB array
+    to recover a six-element mean would be a strange thing to deploy.
+    """
+    payload = json.loads((directory / NORMALIZATION_FILENAME).read_text(encoding="utf-8"))
+    computed_from = payload["computed_from"]
+    return Normalization(
+        means=np.asarray(payload["mean"], dtype=np.float64),
+        stds=np.asarray(payload["std"], dtype=np.float64),
+        source_split=Split(computed_from["split"]),
+        source_machines=int(computed_from["machines"]),
+        source_rows=int(computed_from["rows"]),
     )
 
 

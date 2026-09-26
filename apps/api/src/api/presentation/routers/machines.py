@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response, status
 
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.time_window import TimeWindow
@@ -12,18 +12,27 @@ from api.presentation.dependencies import (
     GetMachineDetailDep,
     GetPredictionHistoryDep,
     GetTelemetryHistoryDep,
+    IngestTokenDep,
     ListIncidentsDep,
     ListMachinesDep,
+    RecordPredictionDep,
+    RegisterMachineDep,
 )
 from api.presentation.presenters import (
     to_incident_list,
+    to_machine,
     to_machine_detail,
     to_machine_summary,
     to_prediction,
     to_telemetry_series,
 )
 from api.presentation.schemas.incident import IncidentSchema
-from api.presentation.schemas.machine import MachineDetailSchema, MachineSummarySchema
+from api.presentation.schemas.machine import (
+    MachineDetailSchema,
+    MachineSchema,
+    MachineSummarySchema,
+    RegisterMachineRequest,
+)
 from api.presentation.schemas.prediction import PredictionSchema
 from api.presentation.schemas.telemetry import TelemetrySeriesSchema
 
@@ -116,3 +125,50 @@ async def get_machine_incidents(
     """Return incidents raised for one machine, most recent first."""
     incidents = await use_case.execute(machine_id=MachineId(machine_id))
     return to_incident_list(incidents)
+
+
+@router.post(
+    "",
+    response_model=MachineSchema,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[IngestTokenDep],
+    summary="Register a machine",
+)
+async def register_machine(
+    payload: RegisterMachineRequest,
+    response: Response,
+    use_case: RegisterMachineDep,
+) -> MachineSchema:
+    """Add a machine to the fleet, or return the one already registered.
+
+    Idempotent, because the pipeline declares its fleet on start without
+    tracking what it declared last time. The status code distinguishes the two
+    outcomes: 201 when this call created the machine, 200 when it already
+    existed.
+    """
+    result = await use_case.execute(MachineId(payload.machine_id), payload.name)
+    if not result.created:
+        response.status_code = status.HTTP_200_OK
+    return to_machine(result.machine)
+
+
+@router.post(
+    "/{machine_id}/predictions",
+    response_model=PredictionSchema,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[IngestTokenDep],
+    summary="Score a machine from its stored telemetry",
+)
+async def record_prediction(
+    machine_id: str,
+    use_case: RecordPredictionDep,
+) -> PredictionSchema:
+    """Ask the model about a machine, and store what it said.
+
+    Takes no body. The window comes from telemetry already stored for the
+    machine, which is what the pipeline persists before anything scores it --
+    so the ordering the model depends on is the API's responsibility rather
+    than a caller's.
+    """
+    prediction = await use_case.execute(MachineId(machine_id))
+    return to_prediction(prediction)

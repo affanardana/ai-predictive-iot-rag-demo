@@ -1,0 +1,210 @@
+{
+  "name": "PDM telemetry ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "topics": "pdm/demo/+/telemetry",
+        "options": {
+          "qos": 1
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Telemetry topic",
+      "type": "n8n-nodes-base.mqttTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "credentials": {
+        "mqtt": {
+          "id": "REPLACE_WITH_YOUR_MQTT_CREDENTIAL_ID",
+          "name": "MQTT broker"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Drop anything that is not a well-formed reading before it reaches the API.\n//\n// This is the pipeline's validation stage. It is deliberately shallow: shape\n// only, never judgement. The API validates the same fields again against its\n// own schema, and it owns the rules -- risk bands, incident policy, idempotency\n// -- so nothing here may grow into a second opinion about them.\n//\n// The broker is public, so anything on this topic may be someone else's.\n// A malformed message is dropped rather than failing the execution, because one\n// stranger's stray publish must not stall the pipeline.\nconst REQUIRED = [\n  'event_id',\n  'machine_id',\n  'recorded_at',\n  'temperature',\n  'vibration',\n  'rpm',\n  'current',\n  'load',\n  'voltage',\n];\n\nconst readings = [];\nfor (const item of $input.all()) {\n  // Defensive about where the payload sits: the MQTT trigger has carried it as\n  // `message`, as `payload`, and as the item's own json across versions.\n  let payload = item.json.message ?? item.json.payload ?? item.json;\n  if (typeof payload === 'string') {\n    try {\n      payload = JSON.parse(payload);\n    } catch (error) {\n      continue;\n    }\n  }\n  if (payload === null || typeof payload !== 'object') continue;\n  if (!REQUIRED.every((key) => key in payload)) continue;\n  if (typeof payload.temperature !== 'number') continue;\n\n  readings.push({ json: payload });\n}\n\nreturn readings;"
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.PDM_API_BASE_URL }}/api/v1/telemetry",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Ingest-Token",
+              "value": "={{ $env.PDM_INGEST_TOKEN }}"
+            },
+            {
+              "name": "x-request-id",
+              "value": "={{ $execution.id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ records: $input.all().map((item) => item.json) }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ready-is-non-empty",
+              "leftValue": "={{ $json.ready.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Warm enough to score?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One item per machine the API reported as holding a full window.\n//\n// The API decides readiness -- this splits what it named, and adds no opinion\n// of its own about what 60 readings means.\nconst ready = $input.first().json.ready ?? [];\n\nreturn ready.map((machineId) => ({ json: { machine_id: machineId } }));"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "One item per machine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.PDM_API_BASE_URL }}/api/v1/machines/{{ $json.machine_id }}/predictions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Ingest-Token",
+              "value": "={{ $env.PDM_INGEST_TOKEN }}"
+            },
+            {
+              "name": "x-request-id",
+              "value": "={{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Telemetry topic": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest": {
+      "main": [
+        [
+          {
+            "node": "Warm enough to score?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Warm enough to score?": {
+      "main": [
+        [
+          {
+            "node": "One item per machine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "One item per machine": {
+      "main": [
+        [
+          {
+            "node": "Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "pdm-demo"
+  },
+  "tags": []
+}

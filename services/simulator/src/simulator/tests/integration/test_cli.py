@@ -69,6 +69,70 @@ def test_dataset_can_write_jsonl(tmp_path: Path) -> None:
     assert (tmp_path / "ground_truth.jsonl").exists()
 
 
+def test_rerunning_the_demo_republishes_identical_event_ids(tmp_path: Path) -> None:
+    """A second `--demo` run is a redelivery, and the schema absorbs it.
+
+    Not a defect. `event_id` is derived from the session, and the session from
+    the scenario and seed -- both pinned by `--demo`. So the second run publishes
+    the same identifiers, `add_many_idempotent` drops every one, and the API
+    reports `accepted: 0`. That *is* the spec's idempotency requirement working.
+
+    The test exists because the alternative is discovering it as "the pipeline
+    stopped storing anything", which looks like a fault and costs an afternoon.
+    """
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    arguments = _demo_arguments()
+
+    assert main([*arguments, str(first)]) == 0
+    assert main([*arguments, str(second)]) == 0
+
+    assert _event_ids(first) == _event_ids(second)
+    assert len(_event_ids(first)) > 0
+
+
+def test_a_new_session_id_changes_every_event_id(tmp_path: Path) -> None:
+    """`--session-id` is how a new run is told apart from a retry.
+
+    Without it there is no way to ingest a second demonstration of the same
+    scenario: the identifiers are identical by construction, so the pipeline
+    correctly refuses to store anything new.
+    """
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    arguments = _demo_arguments()
+
+    assert main([*arguments, str(first)]) == 0
+    assert main([*arguments, str(second), "--session-id", "demo-two"]) == 0
+
+    second_ids = _event_ids(second)
+    assert second_ids != _event_ids(first)
+    assert all("demo-two" in event_id for event_id in second_ids)
+
+
+def _demo_arguments() -> list[str]:
+    """The flags that make a demo run short, deterministic, and inspectable."""
+    return [
+        "realtime",
+        "--demo",
+        "--minutes",
+        "3",
+        "--tick-seconds",
+        "0",
+        "--sink",
+        "jsonl",
+        "--started-at",
+        "2026-09-23T12:00:00+00:00",
+        "--out",
+    ]
+
+
+def _event_ids(directory: Path) -> list[str]:
+    """Every published event id, in order."""
+    written = (directory / "telemetry.jsonl").read_text(encoding="utf-8")
+    return [json.loads(line)["event_id"] for line in written.splitlines()]
+
+
 def test_the_demo_stream_is_reproducible(tmp_path: Path) -> None:
     """PRD section 12, exercised through the command a reviewer would run.
 

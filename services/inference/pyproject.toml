@@ -1,0 +1,23 @@
+[project]
+name = "inference"
+version = "0.1.0"
+description = "Model inference service for the AI Predictive Maintenance platform"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # The model itself. `ml[train]` is what brings torch, which is why this
+    # service exists as a separate deployable rather than inside the API.
+    "ml[train]",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.28",
+]
+
+[tool.uv.sources]
+ml = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inference"]

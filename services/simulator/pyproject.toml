@@ -2,10 +2,23 @@
 name = "simulator"
 version = "0.2.0"
 description = "Telemetry simulator for the AI Predictive Maintenance platform"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "pyarrow>=18.0",
 ]
+
+# The MQTT transport is an extra rather than a core dependency, for the same
+# structural reason `ml` makes torch one: `ml` depends on `simulator`, and
+# `services/inference` depends on `ml[train]`, so a core MQTT client would ride
+# into the inference image and into every CI job to serve a `--sink mqtt` that
+# most of them never select.
+#
+# It also has to be importable *lazily*. `simulator.infrastructure.sinks`
+# re-exports every sink and `simulator.cli` imports that package, so a
+# module-level `import paho` would make the CLI unimportable — and `test_cli.py`
+# imports it — in the default offline tier, where the extra is not installed.
+[project.optional-dependencies]
+mqtt = ["paho-mqtt>=2.1"]
 
 [build-system]
 requires = ["hatchling"]

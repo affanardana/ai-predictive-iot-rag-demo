@@ -8,24 +8,37 @@ with no application or presentation file changing.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from api.application.use_cases import (
     GetMachineDetail,
     GetPredictionHistory,
     GetTelemetryHistory,
+    IngestTelemetry,
     ListIncidents,
     ListMachines,
+    RecordPrediction,
+    RegisterMachine,
 )
+from api.domain.entities.prediction import PREDICTION_WINDOW_READINGS
+from api.domain.errors import PredictionUnavailableError
 from api.domain.ports.clock import Clock
 from api.domain.ports.health import HealthProbe, HealthStatus
+from api.domain.ports.predictor import ModelOutput, Predictor
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
+from api.domain.services.incident_policy import DefaultIncidentPolicy
+from api.domain.services.risk_level_classifier import RiskLevelClassifier
+from api.domain.value_objects.risk_thresholds import RiskThresholds
+from api.domain.value_objects.sensor_reading import SensorReading
 from api.infrastructure.config import Settings
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
 from api.infrastructure.persistence.sql.session import create_database_engine
 from api.infrastructure.persistence.sql.unit_of_work import SqlUnitOfWorkFactory
+from api.infrastructure.prediction import HttpPredictor
 from api.infrastructure.system.database_health_probe import DatabaseHealthProbe
 from api.infrastructure.system.system_clock import SystemClock
 
@@ -49,6 +62,9 @@ class Container:
     get_telemetry_history: GetTelemetryHistory
     get_prediction_history: GetPredictionHistory
     list_incidents: ListIncidents
+    record_prediction: RecordPrediction
+    ingest_telemetry: IngestTelemetry
+    register_machine: RegisterMachine
 
     #: Present only when a database engine was created; the in-memory wiring
     #: has nothing to dispose.
@@ -79,6 +95,9 @@ def build_container(settings: Settings) -> Container:
         settings=settings,
         unit_of_work_factory=unit_of_work_factory,
         health_probe=DatabaseHealthProbe(unit_of_work_factory.session_factory),
+        predictor=HttpPredictor(
+            base_url=settings.inference_service_url, client=httpx.AsyncClient()
+        ),
         engine=engine,
         clock=SystemClock(),
     )
@@ -89,6 +108,7 @@ def build_in_memory_container(
     unit_of_work_factory: InMemoryUnitOfWorkFactory | None = None,
     clock: Clock | None = None,
     health_probe: HealthProbe | None = None,
+    predictor: Predictor | None = None,
 ) -> Container:
     """Wire the application against an in-memory store.
 
@@ -104,6 +124,7 @@ def build_in_memory_container(
         settings=settings,
         unit_of_work_factory=unit_of_work_factory or InMemoryUnitOfWorkFactory(),
         health_probe=health_probe or AlwaysHealthyProbe(),
+        predictor=predictor or UnavailablePredictor(),
         engine=None,
         clock=clock or SystemClock(),
     )
@@ -121,6 +142,7 @@ def _assemble(
     settings: Settings,
     unit_of_work_factory: UnitOfWorkFactory,
     health_probe: HealthProbe,
+    predictor: Predictor,
     engine: AsyncEngine | None,
     clock: Clock,
 ) -> Container:
@@ -138,5 +160,44 @@ def _assemble(
         ),
         get_prediction_history=GetPredictionHistory(unit_of_work_factory=unit_of_work_factory),
         list_incidents=ListIncidents(unit_of_work_factory=unit_of_work_factory),
+        record_prediction=RecordPrediction(
+            unit_of_work_factory=unit_of_work_factory,
+            predictor=predictor,
+            clock=clock,
+            classifier=RiskLevelClassifier(
+                thresholds=RiskThresholds(
+                    warning=settings.risk_warning_threshold,
+                    high=settings.risk_high_threshold,
+                    critical=settings.risk_critical_threshold,
+                )
+            ),
+            incident_policy=DefaultIncidentPolicy(),
+        ),
+        ingest_telemetry=IngestTelemetry(
+            unit_of_work_factory=unit_of_work_factory,
+            window_readings=PREDICTION_WINDOW_READINGS,
+        ),
+        register_machine=RegisterMachine(unit_of_work_factory=unit_of_work_factory, clock=clock),
         engine=engine,
     )
+
+
+class UnavailablePredictor:
+    """A predictor that always refuses, for wiring with no model behind it.
+
+    The in-memory container is used by tests that never call inference, and by
+    a deployment that has not been pointed at a service yet. Failing loudly here
+    is better than a placeholder that returns a fixed number: a fabricated
+    probability would be persisted as a prediction.
+    """
+
+    async def predict(self, readings: Sequence[SensorReading]) -> ModelOutput:
+        """Refuse, whatever was asked.
+
+        Raises:
+            PredictionUnavailableError: always.
+        """
+        del readings
+        raise PredictionUnavailableError(
+            "No inference service is configured. Set INFERENCE_SERVICE_URL."
+        )

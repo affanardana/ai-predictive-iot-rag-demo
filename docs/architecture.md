@@ -44,10 +44,17 @@ PyTorch — nor any outer layer of this project.
 
 ### `application`
 
-Five use cases, each a small object taking a `UnitOfWork` by constructor
+Eight use cases, each a small object taking a `UnitOfWork` by constructor
 injection. No SQL, no HTTP types, no model loading. A `summaries` module holds
 the machine-summary assembly shared by the fleet list and the detail view, so the
 two cannot disagree about the same machine.
+
+Two of them write, and they are the only two. `IngestTelemetry` persists a batch
+of readings and reports which machines now hold enough history to score;
+`RecordPrediction` reads a machine's window back out, asks the model, and
+persists the prediction together with any incident it raises. `RegisterMachine`
+adds to the fleet. Everything the pipeline does to the database passes through
+one of the three.
 
 ### `infrastructure`
 
@@ -65,6 +72,14 @@ two cannot disagree about the same machine.
 
 Routers, Pydantic response schemas, presenters (domain → schema), and the error
 catalog. No business logic and no direct persistence access.
+
+It also holds the one credential in the system: `require_ingest_token`, applied
+to the three routes that write. It lives here rather than in `domain/errors.py`
+because authentication is a property of how a request arrived, not a business
+rule — the domain never sees it, and `error_catalog.py` is typed as a mapping
+over `DomainError` to keep that boundary meaningful. Phase 11 owns real
+authentication; this is one machine proving to another that it is the expected
+caller.
 
 ### `composition`
 
@@ -161,7 +176,21 @@ where behaviour changes are the ones worth asserting.
   it should be replaced by a bulk read port before the Phase 7 dashboard polls it.
 - **`IncidentType` is always `UNCLASSIFIED`.** The model is a binary failure
   classifier and cannot say what is failing. Three resolutions are documented in
-  `domain/value_objects/incident_type.py`; choosing one is a Phase 5 decision.
+  `domain/value_objects/incident_type.py`; the stub is now reached by real
+  incidents, so the gap is visible in the product rather than only in the type.
+- **Incidents are suppressed while one is open.** `RecordPrediction` raises an
+  incident only when the machine has none open, which is a rule the PRD does not
+  state — §10 says only "create an incident when configured predictive-risk
+  conditions are satisfied". Without it a machine that crosses HIGH stays there
+  and files one incident per reading. The residual race, two concurrent scorings
+  both finding none, is accepted rather than locked against.
+- **The simulator's clock runs ahead of the wall clock.** `recorded_at` advances
+  at `sample_interval × index` while the paced loop sleeps `tick_seconds` per
+  tick, so a demo at 300× produces timestamps an hour ahead of now within twelve
+  seconds. Anything bounded by `clock.now()` — every `GET
+  /machines/{id}/telemetry` — returns nothing during such a run. Phase 6 works
+  around it with count-based reads and a `--started-at` in the past; the fix is
+  a "relative to newest record" query mode, and it belongs to Phase 7.
 - **`list_for_machine` is used to count open incidents** in the fleet summary,
   capped at 500 rows. A dedicated count query is the right fix when incident
   volume grows.

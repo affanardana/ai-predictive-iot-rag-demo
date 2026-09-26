@@ -11,7 +11,12 @@ from api import __version__
 from api.composition.container import Container
 from api.presentation.errors import register_error_handlers
 from api.presentation.middleware import RequestContextMiddleware
-from api.presentation.routers import health_router, incidents_router, machines_router
+from api.presentation.routers import (
+    health_router,
+    incidents_router,
+    machines_router,
+    telemetry_router,
+)
 
 API_V1_PREFIX = "/api/v1"
 
@@ -56,5 +61,6 @@ def create_app(container: Container) -> FastAPI:
     app.include_router(health_router)
     app.include_router(machines_router, prefix=API_V1_PREFIX)
     app.include_router(incidents_router, prefix=API_V1_PREFIX)
+    app.include_router(telemetry_router, prefix=API_V1_PREFIX)
 
     return app

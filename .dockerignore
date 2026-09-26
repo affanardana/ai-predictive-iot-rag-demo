@@ -1,0 +1,69 @@
+# Build context for the Compose stack in `infra/compose/`.
+#
+# The context is the repository root, so a `COPY apps/api/src/api` needs the
+# whole tree available to Docker before it discards anything. Without this file
+# every build uploads the virtualenv, five caches, and the training data -- on a
+# 1-core box with 48 GB of disk that is minutes of upload per build and
+# gigabytes of context nobody reads.
+#
+# Anything excluded here that a Dockerfile then tries to COPY is a build
+# failure, not a silent omission, so this list is safe to keep aggressive.
+#
+# **Leading slashes are load-bearing.** A pattern without one matches at any
+# depth, so a bare `model/` would also exclude `ml/src/ml/model/` -- the torch
+# network and checkpoint code the inference image imports. The build would fail
+# with an import error naming a package that is sitting right there on disk.
+# `.gitignore` carries a comment about this same trap for `/model/`; the
+# directory-anchored patterns below are all deliberate and all start with `/`.
+
+# --- Version control and editor noise ---
+/.git/
+/.gitignore
+/.gitattributes
+/.github/
+
+# --- Python environments and tool caches ---
+# `.venv/` alone is several hundred megabytes, and on a Windows checkout it is
+# Windows wheels that could not run in a Linux image anyway.
+# These two are matched at any depth on purpose: `__pycache__` appears inside
+# every source package.
+/.venv/
+__pycache__/
+*.py[cod]
+/.mypy_cache/
+/.ruff_cache/
+/.pytest_cache/
+/.import_linter_cache/
+
+# --- Data and model artefacts ---
+# `data/training/signals.npy` is 58 MB on its own. These are mounted into the
+# inference container at runtime rather than baked into an image, so they are
+# never part of a build.
+/data/
+/colab_report/
+/model/
+*.pt
+*.ckpt
+*.pth
+
+# --- Notebooks ---
+# The Colab training notebook is orchestration, not something the stack runs.
+/ml/notebooks/
+
+# --- Local scratch and planning material ---
+/.local/
+/spec_driven_development/
+/README.full.md
+
+# --- Node ---
+node_modules/
+
+# --- Test and dev configuration ---
+# None of it is imported by any container: the API installs its packages by
+# name, and the services copy source directly.
+/.python-version
+/.pre-commit-config.yaml
+/conftest.py
+**/tests/
+**/test_*.py
+**/*.db

@@ -89,6 +89,26 @@ class InMemoryTelemetryRepository:
             return None
         return deepcopy(max(matching, key=lambda record: record.recorded_at))
 
+    async def latest_records(self, machine_id: MachineId, limit: int) -> Sequence[TelemetryRecord]:
+        """Return the most recent `limit` measurements, oldest first."""
+        matching = sorted(
+            (
+                record
+                for record in self._store.telemetry.values()
+                if record.machine_id == machine_id
+            ),
+            # `event_id` breaks ties, matching the SQL adapter, so both are
+            # deterministic when two records share a timestamp.
+            key=lambda record: (record.recorded_at, record.event_id),
+        )
+        return [deepcopy(record) for record in matching[-limit:]]
+
+    async def count_for(self, machine_id: MachineId) -> int:
+        """Return how many measurements are stored for a machine."""
+        return sum(
+            1 for record in self._store.telemetry.values() if record.machine_id == machine_id
+        )
+
     async def window_raw(
         self,
         machine_id: MachineId,

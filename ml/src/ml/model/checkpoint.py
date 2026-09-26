@@ -19,6 +19,7 @@ did, without needing the training data or a GPU.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,19 @@ class Checkpoint:
     # and a resumable `last.pt` carries both.
     optimiser_state: dict[str, Any] | None = None
     scheduler_state: dict[str, Any] | None = None
+
+    @property
+    def run_id(self) -> str:
+        """Return the run that produced this checkpoint.
+
+        Read from the manifest it carries, so the value reported by a service
+        and the value persisted against a prediction are the same string as the
+        one in the run directory.
+        """
+        try:
+            return str(json.loads(self.manifest_json).get("run_id") or "unknown")
+        except (ValueError, AttributeError):
+            return "unknown"
 
     def __post_init__(self) -> None:
         """Reject a checkpoint that cannot be verified or re-calibrated."""

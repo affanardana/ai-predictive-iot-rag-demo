@@ -159,12 +159,47 @@ def test_reads_values_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> N
     """Environment variables override defaults."""
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("LOG_LEVEL", "debug")
+    # Required alongside APP_ENV=production; see the ingest-token tests below.
+    monkeypatch.setenv("INGEST_API_TOKEN", "s3cret")
 
     settings = Settings()
 
     assert settings.app_env == "production"
     assert settings.is_production
     assert settings.log_level == "DEBUG", "log level should be normalised to uppercase"
+
+
+def test_requires_an_ingest_token_outside_local() -> None:
+    """A deployment without a token refuses to start.
+
+    The write endpoints are the only way telemetry and machines enter the
+    database and are reachable from the internet, so starting without a
+    credential would serve them to anyone.
+    """
+    with pytest.raises(ValidationError, match="INGEST_API_TOKEN"):
+        Settings(app_env="production")
+
+    with pytest.raises(ValidationError, match="INGEST_API_TOKEN"):
+        Settings(app_env="ci")
+
+
+def test_local_needs_no_ingest_token() -> None:
+    """Local development and the offline test tier run unauthenticated.
+
+    Gating on anything broader would require every developer and every CI job
+    to hold a shared secret to run a test suite that never leaves the machine.
+    """
+    assert Settings(app_env="local").ingest_api_token is None
+
+
+def test_the_ingest_token_defaults_to_unset() -> None:
+    """A missing token is absent rather than empty.
+
+    The dependency distinguishes `None` (nothing to check) from a configured
+    value, so an empty string would silently become a required credential that
+    no caller could ever satisfy.
+    """
+    assert Settings().ingest_api_token is None
 
 
 def test_rejects_an_unknown_log_level() -> None:

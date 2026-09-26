@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from api.domain.errors import DomainError
+from api.presentation.errors.authentication import AuthenticationError
 from api.presentation.errors.error_catalog import resolve
 from api.presentation.schemas.errors import ErrorDetail, ErrorResponse
 
@@ -22,6 +23,7 @@ _SERVER_ERROR_THRESHOLD = 500
 def register_error_handlers(app: FastAPI) -> None:
     """Attach the error handlers to `app`."""
     app.add_exception_handler(DomainError, _handle_domain_error)
+    app.add_exception_handler(AuthenticationError, _handle_authentication_error)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(Exception, _handle_unexpected_error)
 
@@ -49,6 +51,17 @@ async def _handle_domain_error(request: Request, exc: Exception) -> JSONResponse
         )
 
     return _envelope(mapping.status_code, mapping.code, str(error))
+
+
+async def _handle_authentication_error(request: Request, exc: Exception) -> JSONResponse:
+    """Render a missing or wrong credential as a 401 in the shared envelope.
+
+    Deliberately indistinguishable from one another in the response, and logged
+    at warning rather than error: a rejected token is an expected event on an
+    endpoint exposed to the internet, not a fault in this process.
+    """
+    logger.warning("http.authentication_failed", extra={"path": request.url.path})
+    return _envelope(401, "unauthorized", "A valid ingest token is required.")
 
 
 async def _handle_validation_error(request: Request, exc: Exception) -> JSONResponse:

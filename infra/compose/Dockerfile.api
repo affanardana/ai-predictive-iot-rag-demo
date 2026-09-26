@@ -1,0 +1,62 @@
+# The API, as a container.
+#
+# This is a direct translation of `apps/api/modal_app.py`, which is the only
+# container definition this service has ever had. Three things carry over
+# because they are load-bearing rather than incidental:
+#
+#   1. **The packages are listed by name.** Never `uv sync --all-packages`. The
+#      workspace resolves torch from PyPI, which on Linux is the CUDA build --
+#      about 2.9 GB of download for compute this process does not do. Listing
+#      eight packages is what keeps the API torch-free, and it is the same
+#      reason the inference service exists as a separate deployable at all.
+#   2. **`psycopg[binary]`, not bare `psycopg`.** The wheel bundles libpq, so
+#      this image needs no `libpq-dev` and no compiler. The source distribution
+#      would try to link against a library that is not here and fail at import
+#      rather than at install.
+#   3. **`APP_ENV=production` is set here, not in the environment file.** It is
+#      not a secret and must not be overridable by accident: it is what makes
+#      the settings validator require an ingest token and refuse to start
+#      without one.
+FROM python:3.12-slim
+
+# `PYTHONUNBUFFERED` so container logs appear as they are written rather than
+# when a buffer fills -- uvicorn's access log is how a failing request is
+# diagnosed, and a buffered one lags the incident it describes.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src \
+    APP_ENV=production
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+        "fastapi>=0.115" \
+        "uvicorn[standard]>=0.32" \
+        "pydantic>=2.9" \
+        "pydantic-settings>=2.6" \
+        "sqlalchemy[asyncio]>=2.0.36" \
+        "psycopg[binary]>=3.2" \
+        "alembic>=1.14" \
+        "httpx>=0.28"
+
+# The layout mirrors the repository rather than flattening, because
+# `alembic.ini` resolves its own paths relative to itself (`%(here)s/src` for
+# the import path, `%(here)s/migrations` for the revisions). Copying `api` to
+# `/app/api` would leave `prepend_sys_path` pointing at a directory that does
+# not exist, and the failure surfaces as an import error inside Alembic rather
+# than as anything mentioning a path.
+COPY apps/api/migrations /app/migrations
+COPY apps/api/alembic.ini /app/alembic.ini
+COPY apps/api/src/api /app/src/api
+
+# Not root. This container answers requests from the internet, and nothing in it
+# needs to write to its own filesystem.
+RUN useradd --create-home --uid 10001 pdm
+USER pdm
+
+EXPOSE 8000
+
+# No `--reload` and no `--workers`. Reload is a development affordance, and
+# workers would multiply the connection pool against a database whose pooler is
+# already the constraint.
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

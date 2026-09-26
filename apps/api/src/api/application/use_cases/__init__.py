@@ -8,13 +8,21 @@ inside another layer.
 from api.application.use_cases.get_machine_detail import GetMachineDetail
 from api.application.use_cases.get_prediction_history import GetPredictionHistory
 from api.application.use_cases.get_telemetry_history import GetTelemetryHistory
+from api.application.use_cases.ingest_telemetry import IngestResult, IngestTelemetry
 from api.application.use_cases.list_incidents import ListIncidents
 from api.application.use_cases.list_machines import ListMachines
+from api.application.use_cases.record_prediction import RecordPrediction
+from api.application.use_cases.register_machine import RegisterMachine, RegistrationResult
 
 __all__ = [
     "GetMachineDetail",
     "GetPredictionHistory",
     "GetTelemetryHistory",
+    "IngestResult",
+    "IngestTelemetry",
     "ListIncidents",
     "ListMachines",
+    "RecordPrediction",
+    "RegisterMachine",
+    "RegistrationResult",
 ]

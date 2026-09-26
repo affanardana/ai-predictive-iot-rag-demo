@@ -197,6 +197,38 @@ class SqlTelemetryRepository:
             model = result.scalars().first()
             return telemetry_from_model(model) if model is not None else None
 
+    async def latest_records(self, machine_id: MachineId, limit: int) -> Sequence[TelemetryRecord]:
+        """Return the most recent `limit` measurements, oldest first."""
+        with translating_persistence_errors():
+            # Newest-first so the LIMIT keeps the most recent rows, then
+            # reversed into the chronological order the port promises.
+            #
+            # `event_id` breaks ties so the result is deterministic. Two rows
+            # sharing a `recorded_at` are possible, and without a tie-break
+            # which one falls outside the limit would depend on the plan.
+            result = await self._session.execute(
+                select(TelemetryModel)
+                .where(TelemetryModel.machine_id == machine_id.value)
+                .order_by(TelemetryModel.recorded_at.desc(), TelemetryModel.event_id.desc())
+                .limit(limit)
+            )
+            models = list(result.scalars().all())
+
+        models.reverse()
+        return [telemetry_from_model(model) for model in models]
+
+    async def count_for(self, machine_id: MachineId) -> int:
+        """Return how many measurements are stored for a machine."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                # A count over the existing `ix_telemetry_machine_id_recorded_at`
+                # index, so it does not read the rows themselves.
+                select(func.count())
+                .select_from(TelemetryModel)
+                .where(TelemetryModel.machine_id == machine_id.value)
+            )
+            return int(result.scalar_one())
+
     async def window_raw(
         self,
         machine_id: MachineId,

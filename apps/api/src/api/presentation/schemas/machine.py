@@ -22,6 +22,22 @@ class MachineSchema(BaseModel):
     registered_at: datetime
 
 
+class RegisterMachineRequest(BaseModel):
+    """A machine to add to the registry.
+
+    The length bounds mirror the columns. `Machine.__post_init__` validates the
+    timestamp but not the name -- only `rename` does -- so an empty name would
+    otherwise reach the database and persist.
+    """
+
+    machine_id: str = Field(
+        min_length=1,
+        max_length=16,
+        description="Fleet-unique identifier, as published in telemetry.",
+    )
+    name: str = Field(min_length=1, max_length=128, description="Human-readable label.")
+
+
 class MachineSummarySchema(BaseModel):
     """A machine with its latest observed and predicted condition.
 

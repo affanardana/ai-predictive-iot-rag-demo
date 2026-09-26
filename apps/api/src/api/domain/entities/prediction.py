@@ -16,6 +16,17 @@ from api.domain.value_objects.risk_level import RiskLevel
 #: change rather than a schema change.
 DEFAULT_PREDICTION_HORIZON = timedelta(minutes=60)
 
+#: How many consecutive readings a prediction needs. PRD section 25.9 fixes the
+#: window at 60 minutes, the same as the horizon, so it is derived rather than
+#: restated -- two independent sixties is one place for them to drift apart.
+#:
+#: The coincidence is a product decision, not a consequence: 25.8 and 25.9 fix
+#: the horizon and the window separately, and nothing forces them to stay
+#: equal. This lives in the domain rather than in the request schema because it
+#: is a rule about the problem, and the API now reads stored telemetry to
+#: satisfy it rather than validating a caller's payload against it.
+PREDICTION_WINDOW_READINGS = int(DEFAULT_PREDICTION_HORIZON.total_seconds() // 60)
+
 
 @dataclass(frozen=True, slots=True)
 class Prediction:

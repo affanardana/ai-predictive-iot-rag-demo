@@ -188,6 +188,154 @@ class TelemetryRepositoryContract:
         async with uow_factory() as uow:
             assert await uow.telemetry.latest_for(MachineId("M001")) is None
 
+    async def test_latest_records_returns_the_most_recent_in_chronological_order(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The tail of the series, oldest-first.
+
+        Both halves matter and they pull in opposite directions: the LIMIT
+        keeps the *newest* rows, and the ordering presents them as a series.
+        An adapter that gets one right and the other wrong still returns three
+        plausible-looking records.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(
+                        event_id=f"evt-{minutes:02d}",
+                        recorded_at=DEFAULT_NOW - timedelta(minutes=minutes),
+                    )
+                    for minutes in (40, 30, 20, 10, 0)
+                ]
+            )
+
+        async with uow_factory() as uow:
+            records = await uow.telemetry.latest_records(MachineId("M001"), limit=3)
+
+        assert [record.event_id for record in records] == ["evt-20", "evt-10", "evt-00"]
+        timestamps = [record.recorded_at for record in records]
+        assert timestamps == sorted(timestamps)
+
+    async def test_latest_records_is_independent_of_insertion_order(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Newest-inserted-first still selects by timestamp.
+
+        The SQL adapter reverses its result, so an insert-ordered store would
+        pass a naive test while returning the oldest rows in production.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(event_id="newest", recorded_at=DEFAULT_NOW),
+                    make_telemetry(event_id="middle", recorded_at=DEFAULT_NOW - timedelta(hours=1)),
+                    make_telemetry(event_id="oldest", recorded_at=DEFAULT_NOW - timedelta(hours=2)),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            records = await uow.telemetry.latest_records(MachineId("M001"), limit=2)
+
+        assert [record.event_id for record in records] == ["middle", "newest"]
+
+    async def test_latest_records_returns_fewer_when_history_is_short(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A short history is truncated, not an error.
+
+        The caller decides whether what came back is enough; refusing here
+        would leave the use case unable to report *how far short* it fell.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(
+                        event_id="only-1", recorded_at=DEFAULT_NOW - timedelta(minutes=1)
+                    ),
+                    make_telemetry(event_id="only-2", recorded_at=DEFAULT_NOW),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            records = await uow.telemetry.latest_records(MachineId("M001"), limit=60)
+
+        assert len(records) == 2
+
+    async def test_latest_records_is_empty_without_records(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A machine that has never reported yields an empty series."""
+        async with uow_factory() as uow:
+            assert await uow.telemetry.latest_records(MachineId("M001"), limit=60) == []
+
+    async def test_latest_records_is_scoped_to_one_machine(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Another machine's readings must never enter the window.
+
+        This is the failure that would matter most: a window silently padded
+        from a neighbour's history would still be sixty readings long, and the
+        model would score it without complaint.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.machines.add(make_machine("M002"))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(event_id="m1-a", machine_id="M001"),
+                    make_telemetry(event_id="m2-a", machine_id="M002"),
+                    make_telemetry(event_id="m1-b", machine_id="M001"),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            records = await uow.telemetry.latest_records(MachineId("M001"), limit=60)
+
+        assert [record.event_id for record in records] == ["m1-a", "m1-b"]
+
+    async def test_count_for_counts_only_that_machine(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Readiness is per machine, so the count is too."""
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.machines.add(make_machine("M002"))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(event_id="m1-a", machine_id="M001"),
+                    make_telemetry(event_id="m2-a", machine_id="M002"),
+                    make_telemetry(event_id="m2-b", machine_id="M002"),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            assert await uow.telemetry.count_for(MachineId("M001")) == 1
+            assert await uow.telemetry.count_for(MachineId("M002")) == 2
+
+    async def test_count_for_is_zero_without_records(self, uow_factory: UnitOfWorkFactory) -> None:
+        """An unstarted machine counts zero rather than failing."""
+        async with uow_factory() as uow:
+            assert await uow.telemetry.count_for(MachineId("M001")) == 0
+
+    async def test_count_for_ignores_redelivered_records(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A redelivered batch must not look like new history.
+
+        This is what keeps readiness from being reached by a retry: if the
+        count moved on a duplicate, a redelivering transport could push a
+        machine over the threshold without a single new reading arriving.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            batch = [make_telemetry(event_id=f"evt-{index}") for index in range(3)]
+            assert await uow.telemetry.add_many_idempotent(batch) == 3
+
+        async with uow_factory() as uow:
+            assert await uow.telemetry.add_many_idempotent(batch) == 0
+            assert await uow.telemetry.count_for(MachineId("M001")) == 3
+
     async def test_window_returns_chronological_order(self, uow_factory: UnitOfWorkFactory) -> None:
         """A window is oldest-first so it can be plotted directly.
 
