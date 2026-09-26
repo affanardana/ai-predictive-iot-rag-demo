@@ -39,10 +39,16 @@ RUN pip install --no-cache-dir \
 COPY ml/src/ml /app/src/ml
 COPY services/simulator/src/simulator /app/src/simulator
 
-# The manifest and the documents it describes. Both are committed -- the corpus
-# is a fixture, not scratch material -- so the image is self-contained and a
-# build from a clone can ingest without anything being mounted.
-COPY knowledge/corpus.json /app/knowledge/corpus.json
+# The manifest, the labelled questions, and the documents the manifest
+# describes. All committed -- the corpus is a fixture, not scratch material --
+# so the image is self-contained and a build from a clone can both ingest and
+# evaluate without anything being mounted.
+#
+# The whole directory rather than the manifest alone: `ml knowledge evaluate`
+# reads `knowledge/eval/questions.json` by default, and copying one file out of
+# it left the evaluation unable to find its own question set inside a container
+# that had already been built and shipped.
+COPY knowledge /app/knowledge
 COPY dummy_pdfs /app/dummy_pdfs
 
 # Not root, and nothing here writes to disk.

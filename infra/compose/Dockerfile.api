@@ -37,7 +37,8 @@ RUN pip install --no-cache-dir \
         "sqlalchemy[asyncio]>=2.0.36" \
         "psycopg[binary]>=3.2" \
         "alembic>=1.14" \
-        "httpx>=0.28"
+        "httpx>=0.28" \
+        "pgvector>=0.3.6"
 
 # The layout mirrors the repository rather than flattening, because
 # `alembic.ini` resolves its own paths relative to itself (`%(here)s/src` for

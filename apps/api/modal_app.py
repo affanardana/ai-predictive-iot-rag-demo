@@ -72,6 +72,9 @@ image = (
         # there and fail at import rather than at install.
         "psycopg[binary]>=3.2",
         "httpx>=0.28",
+        # The `vector` column type for retrieval (Phase 9). The extension itself
+        # is installed by migration 0003; this is the Python side only.
+        "pgvector>=0.3.6",
     )
     # Every build step precedes the local directory below; Modal rejects an
     # image that runs one afterwards, and local files added last are what keep

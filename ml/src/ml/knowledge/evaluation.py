@@ -299,6 +299,42 @@ def ask(
     return tuple(answers)
 
 
+def count_documents(*, client: httpx.Client, api_url: str) -> int:
+    """Return how many document versions the server holds.
+
+    Asked of the server rather than read from the manifest. The evaluation runs
+    against a stack, and what it measured is what that stack contains -- which
+    is not necessarily what the manifest says should be there, and a count from
+    the wrong side of the wire would let a half-ingested corpus be reported as a
+    retrieval result.
+
+    Raises:
+        KnowledgeError: if the API cannot be reached, or holds nothing. An empty
+            corpus makes every metric zero for a reason that has nothing to do
+            with retrieval, so it is refused here rather than averaged into a
+            report.
+    """
+    try:
+        response = client.get(
+            f"{api_url.rstrip('/')}/api/v1/knowledge/documents",
+            params={"limit": 200},
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        raise KnowledgeError(f"Could not reach the API at {api_url}: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise KnowledgeError(f"Listing the corpus failed ({response.status_code}): {response.text}")
+
+    documents = len(response.json())
+    if documents == 0:
+        raise KnowledgeError(
+            "The corpus is empty, so there is nothing to retrieve. Run "
+            "`python -m ml knowledge ingest` first."
+        )
+    return documents
+
+
 def _search(
     client: httpx.Client,
     api_url: str,

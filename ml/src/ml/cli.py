@@ -229,12 +229,16 @@ def _knowledge(args: argparse.Namespace) -> int:
     precisely because it is the one module in that package that needs nothing
     outside the standard library.
     """
+    # `evaluate` reads no manifest: it measures a running stack, so it asks that
+    # stack how large its corpus is. Dispatching before the read is what keeps a
+    # subcommand without a `--corpus` flag from reaching for one.
+    if args.action == "evaluate":
+        return _knowledge_evaluate(args)
+
     entries = read_corpus(args.corpus)
     if args.action == "extract":
         return _knowledge_extract(args, entries)
-    if args.action == "ingest":
-        return _knowledge_ingest(args, entries)
-    return _knowledge_evaluate(args, entries)
+    return _knowledge_ingest(args, entries)
 
 
 def _knowledge_extract(
@@ -313,7 +317,7 @@ def _knowledge_ingest(args: argparse.Namespace, entries: Sequence[CorpusEntry]) 
     return 0
 
 
-def _knowledge_evaluate(args: argparse.Namespace, entries: Sequence[CorpusEntry]) -> int:
+def _knowledge_evaluate(args: argparse.Namespace) -> int:
     """Measure retrieval with and without reranking, and report both."""
     import json
 
@@ -325,9 +329,10 @@ def _knowledge_evaluate(args: argparse.Namespace, entries: Sequence[CorpusEntry]
         return _missing_knowledge_extra()
 
     questions = evaluation.read_questions(args.questions)
-    print(f"{len(questions)} questions against {len(entries)} documents.", file=sys.stderr)
 
     with httpx.Client() as client:
+        documents = evaluation.count_documents(client=client, api_url=args.api_url)
+        print(f"{len(questions)} questions against {documents} documents.", file=sys.stderr)
         without = evaluation.measure(
             evaluation.ask(
                 questions, client=client, api_url=args.api_url, rerank=False, limit=args.limit
@@ -339,12 +344,12 @@ def _knowledge_evaluate(args: argparse.Namespace, entries: Sequence[CorpusEntry]
             )
         )
 
-    print(evaluation.render_comparison(without, with_rerank, documents=len(entries)))
+    print(evaluation.render_comparison(without, with_rerank, documents=documents))
     if args.out is not None:
         payload = {
             "questions": str(args.questions),
             "limit": args.limit,
-            "documents": len(entries),
+            "documents": documents,
             "vector_only": evaluation.as_payload(without),
             "reranked": evaluation.as_payload(with_rerank),
         }
