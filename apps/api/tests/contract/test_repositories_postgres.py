@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
@@ -276,7 +276,7 @@ async def test_check_constraint_rejects_an_unknown_risk_level(
         )
     )
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(DataError):
         await postgres_session.flush()
 
     await postgres_session.rollback()
@@ -359,6 +359,13 @@ async def test_the_vector_column_is_a_pgvector_type(
     installed and the column really is `vector(384)`, without asking the
     catalogue what type it thinks it has. A JSON fallback would accept this row
     happily, which is exactly the failure being ruled out.
+
+    `DataError`, not `IntegrityError` as the CHECK-constraint tests above use:
+    the width is checked by pgvector's own input function, so the server reports
+    a data exception rather than a constraint violation. This assertion was
+    `IntegrityError` when it was written, and CI was the first thing to run it --
+    the `postgres` tier is opt-in, so the offline gate deselects the only test
+    that could have caught it.
     """
     async with postgres_uow_factory() as uow:
         document = make_knowledge_document(is_active=True)
