@@ -18,6 +18,8 @@ from ml.knowledge.evaluation import (
     recall_at_k,
     reciprocal_rank,
     render_comparison,
+    render_scores,
+    summarise_scores,
 )
 
 RELEVANT = ("bearing-inspection-sop", "vibration-diagnosis-guide")
@@ -147,6 +149,80 @@ def test_the_phrase_rate_catches_the_right_document_with_the_wrong_section() -> 
 
     assert metrics.recall[3] == pytest.approx(0.5)
     assert metrics.phrase_match_rate == pytest.approx(1 / 3)
+
+
+@pytest.mark.parametrize("k", [3, 5, 10])
+def test_ndcg_cannot_exceed_one(k: int) -> None:
+    """The ceiling the first measured run broke.
+
+    A document whose several passages fill the top of the ranking was counted
+    once per passage, so document-level nDCG came out at 1.72 — a number that
+    should have been impossible and was, which is how the mistake was found.
+    """
+    ranked = ("bearing-inspection-sop",) * 5
+
+    assert ndcg_at_k(ranked, ("bearing-inspection-sop",), k) == pytest.approx(1.0)
+
+
+def test_every_metric_stays_inside_its_range() -> None:
+    """Recall, precision and nDCG are fractions, and MRR is at most one."""
+    answers = [
+        an_answer(("bearing-inspection-sop", "bearing-inspection-sop", "other")),
+        an_answer(("other", "other", "other")),
+        an_answer(
+            (),
+            question=a_question(question_id="q2", answerable=False, relevant_document_keys=()),
+            sufficient=False,
+        ),
+    ]
+
+    metrics = measure(answers)
+
+    assert all(0.0 <= value <= 1.0 for value in metrics.recall.values())
+    assert 0.0 <= metrics.precision_at_3 <= 1.0
+    assert 0.0 <= metrics.mrr_at_10 <= 1.0
+    assert 0.0 <= metrics.ndcg_at_5 <= 1.0
+
+
+def test_the_two_stages_scores_are_reported_so_the_threshold_can_be_read() -> None:
+    """The abstention rate is unreadable without knowing the scales.
+
+    A cosine similarity sits in [-1, 1] and rarely goes below zero; a
+    cross-encoder logit is centred near zero. Both are compared against one
+    configured threshold, so the separation is what says whether a stage's
+    scores actually distinguish answerable from unanswerable questions.
+    """
+    answers = [
+        an_answer(("bearing-inspection-sop",), top_score=0.6),
+        an_answer(
+            ("other",),
+            question=a_question(question_id="q2", answerable=False, relevant_document_keys=()),
+            sufficient=False,
+            top_score=-4.0,
+        ),
+    ]
+
+    summary = summarise_scores(answers)
+
+    assert summary.answerable_median == pytest.approx(0.6)
+    assert summary.unanswerable_median == pytest.approx(-4.0)
+    assert summary.separation == pytest.approx(4.6)
+    assert "separation" in render_scores(summary, summary)
+
+
+def test_a_stage_that_cannot_tell_the_difference_reports_no_separation() -> None:
+    """Zero separation is the honest answer when the scores do not separate."""
+    answers = [
+        an_answer(("bearing-inspection-sop",), top_score=0.5),
+        an_answer(
+            ("other",),
+            question=a_question(question_id="q2", answerable=False, relevant_document_keys=()),
+            sufficient=False,
+            top_score=0.5,
+        ),
+    ]
+
+    assert summarise_scores(answers).separation == pytest.approx(0.0)
 
 
 def test_the_comparison_prints_both_runs_side_by_side() -> None:

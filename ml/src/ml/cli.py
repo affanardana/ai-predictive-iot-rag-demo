@@ -320,6 +320,7 @@ def _knowledge_ingest(args: argparse.Namespace, entries: Sequence[CorpusEntry]) 
 def _knowledge_evaluate(args: argparse.Namespace) -> int:
     """Measure retrieval with and without reranking, and report both."""
     import json
+    from dataclasses import asdict
 
     try:
         import httpx
@@ -333,18 +334,27 @@ def _knowledge_evaluate(args: argparse.Namespace) -> int:
     with httpx.Client() as client:
         documents = evaluation.count_documents(client=client, api_url=args.api_url)
         print(f"{len(questions)} questions against {documents} documents.", file=sys.stderr)
-        without = evaluation.measure(
-            evaluation.ask(
-                questions, client=client, api_url=args.api_url, rerank=False, limit=args.limit
-            )
+        vector_answers = evaluation.ask(
+            questions, client=client, api_url=args.api_url, rerank=False, limit=args.limit
         )
-        with_rerank = evaluation.measure(
-            evaluation.ask(
-                questions, client=client, api_url=args.api_url, rerank=True, limit=args.limit
-            )
+        reranked_answers = evaluation.ask(
+            questions, client=client, api_url=args.api_url, rerank=True, limit=args.limit
         )
 
+    without = evaluation.measure(vector_answers)
+    with_rerank = evaluation.measure(reranked_answers)
+
     print(evaluation.render_comparison(without, with_rerank, documents=documents))
+    # The score summary goes underneath because the abstention row above cannot
+    # be read without it: the two stages rank on different scales, and both are
+    # compared against one threshold.
+    print()
+    print(
+        evaluation.render_scores(
+            evaluation.summarise_scores(vector_answers),
+            evaluation.summarise_scores(reranked_answers),
+        )
+    )
     if args.out is not None:
         payload = {
             "questions": str(args.questions),
@@ -352,6 +362,10 @@ def _knowledge_evaluate(args: argparse.Namespace) -> int:
             "documents": documents,
             "vector_only": evaluation.as_payload(without),
             "reranked": evaluation.as_payload(with_rerank),
+            "scores": {
+                "vector_only": asdict(evaluation.summarise_scores(vector_answers)),
+                "reranked": asdict(evaluation.summarise_scores(reranked_answers)),
+            },
         }
         args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"\nwrote {args.out}", file=sys.stderr)

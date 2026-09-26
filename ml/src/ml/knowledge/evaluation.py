@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +46,14 @@ class Question:
 
 @dataclass(frozen=True, slots=True)
 class Answer:
-    """What the corpus returned for one question."""
+    """What the corpus returned for one question.
+
+    `ranked_document_keys` is a ranking of *documents*, not of passages: each
+    key appears once, in the order its first passage was returned. A document
+    whose three passages fill the top three is one result at rank one, not three
+    results -- counting it three times makes document-level nDCG exceed 1, which
+    is how that mistake was found.
+    """
 
     question: Question
     ranked_document_keys: tuple[str, ...]
@@ -53,6 +61,12 @@ class Answer:
     #: if no returned passage carried it.
     phrase_rank: int | None
     sufficient: bool
+    #: The best score the stage returned, whichever scale that stage ranks on.
+    #: Carried because the two stages do not share one: a cosine similarity and
+    #: a cross-encoder logit are both compared against `KNOWLEDGE_MINIMUM_SCORE`,
+    #: and a reader has to be able to see that before believing an abstention
+    #: rate that differs between them.
+    top_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,25 +88,41 @@ class Metrics:
     unanswerable_count: int
 
 
+def _distinct(ranked: Sequence[str]) -> list[str]:
+    """Return the ranking with each document kept once, at its first position.
+
+    Every metric here is document-level, and the ranking that comes back from a
+    search is passage-level: one document can hold several of the top passages,
+    which is one result, not several. Normalising here rather than trusting
+    callers is what makes "nDCG is at most 1" true by construction — the first
+    measured run reported 1.72, which is how the omission was found.
+    """
+    seen: list[str] = []
+    for key in ranked:
+        if key not in seen:
+            seen.append(key)
+    return seen
+
+
 def recall_at_k(ranked: Sequence[str], relevant: Sequence[str], k: int) -> float:
     """Return the share of relevant documents present in the top `k`."""
     wanted = set(relevant)
     if not wanted:
         return 0.0
-    return len(set(ranked[:k]) & wanted) / len(wanted)
+    return len(set(_distinct(ranked)[:k]) & wanted) / len(wanted)
 
 
 def precision_at_k(ranked: Sequence[str], relevant: Sequence[str], k: int) -> float:
     """Return the share of the top `k` that is relevant."""
     if k <= 0:
         return 0.0
-    return len(set(ranked[:k]) & set(relevant)) / k
+    return len(set(_distinct(ranked)[:k]) & set(relevant)) / k
 
 
 def reciprocal_rank(ranked: Sequence[str], relevant: Sequence[str], k: int = 10) -> float:
     """Return 1/rank of the first relevant document, or 0 if none is in the top `k`."""
     wanted = set(relevant)
-    for rank, key in enumerate(ranked[:k], start=1):
+    for rank, key in enumerate(_distinct(ranked)[:k], start=1):
         if key in wanted:
             return 1.0 / rank
     return 0.0
@@ -103,7 +133,7 @@ def ndcg_at_k(ranked: Sequence[str], relevant: Sequence[str], k: int = 5) -> flo
     wanted = set(relevant)
     if not wanted:
         return 0.0
-    gains = [1.0 if key in wanted else 0.0 for key in ranked[:k]]
+    gains = [1.0 if key in wanted else 0.0 for key in _distinct(ranked)[:k]]
     discounted = sum(gain / math.log2(rank + 1) for rank, gain in enumerate(gains, start=1))
     ideal = sum(1.0 / math.log2(rank + 1) for rank in range(1, min(len(wanted), k) + 1))
     return discounted / ideal if ideal else 0.0
@@ -176,6 +206,79 @@ def measure(answers: Sequence[Answer]) -> Metrics:
         answerable_count=len(answerable),
         unanswerable_count=len(unanswerable),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreSummary:
+    """Where a stage's best scores sit, answerable against unanswerable.
+
+    Both stages are compared against one configured threshold, and they do not
+    rank on the same scale: a cosine similarity lives in [-1, 1] and is almost
+    never at or below zero, while a cross-encoder's logit is centred near zero
+    and negative about half the time. So an abstention rate that differs between
+    the two columns may be a threshold meaning two different things rather than
+    one stage knowing what it does not know -- and these numbers are how a
+    reader tells which.
+    """
+
+    answerable_median: float | None
+    unanswerable_median: float | None
+
+    @property
+    def separation(self) -> float | None:
+        """How far the answerable scores sit above the unanswerable ones.
+
+        Positive means the stage's own scores distinguish the two; near zero
+        means they do not, whatever the abstention rate says.
+        """
+        if self.answerable_median is None or self.unanswerable_median is None:
+            return None
+        return self.answerable_median - self.unanswerable_median
+
+
+def summarise_scores(answers: Sequence[Answer]) -> ScoreSummary:
+    """Summarise one run's top scores by whether the question was answerable."""
+    return ScoreSummary(
+        answerable_median=_median_top(answers, answerable=True),
+        unanswerable_median=_median_top(answers, answerable=False),
+    )
+
+
+def _median_top(answers: Sequence[Answer], *, answerable: bool) -> float | None:
+    """Return the median best score over the questions in one group."""
+    scores = [
+        answer.top_score
+        for answer in answers
+        if answer.question.answerable is answerable and answer.top_score is not None
+    ]
+    return statistics.median(scores) if scores else None
+
+
+def render_scores(without: ScoreSummary, with_rerank: ScoreSummary) -> str:
+    """Render the two stages' score summaries beneath the metric table."""
+    rows = [
+        (
+            "top score, answerable (median)",
+            without.answerable_median,
+            with_rerank.answerable_median,
+        ),
+        (
+            "top score, unanswerable (median)",
+            without.unanswerable_median,
+            with_rerank.unanswerable_median,
+        ),
+        ("separation", without.separation, with_rerank.separation),
+    ]
+    width = max(len(label) for label, _, _ in rows)
+    lines = [f"{'':<{width}}  {'vector only':>11}  {'reranked':>11}"]
+    for label, left, right in rows:
+        lines.append(f"{label:<{width}}  {_number(left):>11}  {_number(right):>11}")
+    return "\n".join(lines)
+
+
+def _number(value: float | None) -> str:
+    """Render a score, or a dash where there was nothing to average."""
+    return "—" if value is None else f"{value:.2f}"
 
 
 def render_comparison(without: Metrics, with_rerank: Metrics, *, documents: int) -> str:
@@ -289,14 +392,28 @@ def ask(
         answers.append(
             Answer(
                 question=question,
-                ranked_document_keys=tuple(
-                    str(match["citation"]["document_key"]) for match in matches
-                ),
+                ranked_document_keys=_document_ranking(matches),
                 phrase_rank=_phrase_rank(matches, question.expected_phrase),
                 sufficient=bool(body.get("sufficient", False)),
+                top_score=float(matches[0]["score"]) if matches else None,
             )
         )
     return tuple(answers)
+
+
+def _document_ranking(matches: Sequence[dict[str, Any]]) -> tuple[str, ...]:
+    """Return the documents behind `matches`, best first and without repeats.
+
+    Deduplicated because every metric here is document-level. Several passages
+    of one document are one retrieved document: counting them separately
+    inflates recall and, past one relevant document, pushes nDCG above 1.
+    """
+    seen: list[str] = []
+    for match in matches:
+        key = str(match["citation"]["document_key"])
+        if key not in seen:
+            seen.append(key)
+    return tuple(seen)
 
 
 def count_documents(*, client: httpx.Client, api_url: str) -> int:

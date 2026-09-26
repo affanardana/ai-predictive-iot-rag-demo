@@ -120,16 +120,17 @@ def ingest_corpus(
     for entry in entries:
         if progress is not None:
             progress(f"parsing {entry.path.name}")
-        outcome = ingest_entry(
-            entry,
-            client=client,
-            api_url=api_url,
-            activate=activate,
-            allow_replace=allow_replace,
+        outcomes.append(
+            ingest_entry(
+                entry,
+                client=client,
+                api_url=api_url,
+                activate=activate,
+                allow_replace=allow_replace,
+            )
         )
-        if progress is not None:
-            progress(outcome.render())
-        outcomes.append(outcome)
+    # Progress is what is *happening*; the outcomes are returned for the caller
+    # to render once. Reporting both from here printed every document twice.
     return tuple(outcomes)
 
 
