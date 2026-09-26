@@ -1,0 +1,64 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind v4, configured in CSS.
+ *
+ * There is no `tailwind.config.js` and no PostCSS config: v4 moved the theme
+ * into `@theme` and the build into a Vite plugin. The v3 preamble --
+ * `@tailwind base; @tailwind components; @tailwind utilities;` -- is what most
+ * examples still show, and under v4 it produces **no styles at all**. The
+ * failure is silent and reads like a broken Vite setup, so if the page renders
+ * unstyled, this file is the first place to look.
+ */
+@theme {
+  /* Surfaces and ink. A light, restrained palette: white cards on a faintly
+     grey canvas, one accent, and the risk bands as the only saturated colour
+     on the page -- so a machine crossing into HIGH is the loudest thing on the
+     screen, which is the story the demonstration tells. */
+  --color-canvas: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-line: #e2e5ea;
+  --color-ink: #16191f;
+  --color-ink-muted: #5b6472;
+  --color-accent: #2563eb;
+
+  /* The four risk bands, from PRD section 9.
+   *
+   * Tailwind's 700-weight steps rather than the 500s: on a white surface the
+   * 500s fall below 3:1 and are unreadable as text. They are still never the
+   * only signal -- `RiskBadge` always renders the band name and an icon
+   * alongside, so the colour is reinforcement rather than information. Roughly
+   * one man in twelve cannot reliably separate the warning and critical hues,
+   * and a dashboard whose meaning depends on that is a dashboard that lies to
+   * them.
+   *
+   * These are product configuration for this synthetic demonstration, not
+   * universal industrial thresholds. */
+  --color-risk-normal: #15803d;
+  --color-risk-warning: #b45309;
+  --color-risk-high: #c2410c;
+  --color-risk-critical: #b91c1c;
+}
+
+@layer base {
+  html {
+    /* Keeps the layout from shifting sideways when a page grows past the
+       viewport, which every table here eventually does. */
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+      sans-serif;
+  }
+
+  /* Numbers that are compared down a column -- sensor readings, probabilities,
+     timestamps -- must not wobble. Proportional figures stay on prose, because
+     tabular ones are wider and read as loose in a sentence. */
+  table,
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
