@@ -1,8 +1,16 @@
 # The self-hosted backend.
 #
-# Three services plus a TLS terminator, on one VPS. PostgreSQL stays on Supabase
-# and the broker stays at `broker.emqx.io`, so neither of those is a container
-# here -- which is most of why this fits on a single core.
+# Three services on one VPS. PostgreSQL stays on Supabase and the broker stays at
+# `broker.emqx.io`, so neither is a container here -- which is most of why this
+# fits on a single core.
+#
+# **There is no Caddy here, and that is deliberate.** This host already runs
+# another project (`~/ifne`) whose Caddy owns 0.0.0.0:80 and 0.0.0.0:443 through
+# `network_mode: host`. Two reverse proxies cannot share those ports, and the
+# one that starts second fails with `address already in use` in a way that looks
+# like a bug in whichever project lost. One proxy per host is the right
+# architecture, so the API and n8n publish to loopback and that Caddy proxies to
+# them. `README.md` has the two blocks to add to its Caddyfile.
 #
 # Bring it up from this directory:
 #
@@ -43,6 +51,13 @@ services:
       RISK_WARNING_THRESHOLD: ${RISK_WARNING_THRESHOLD:-0.30}
       RISK_HIGH_THRESHOLD: ${RISK_HIGH_THRESHOLD:-0.60}
       RISK_CRITICAL_THRESHOLD: ${RISK_CRITICAL_THRESHOLD:-0.80}
+    ports:
+      # Loopback only. This is not a public exposure -- it exists so the shared
+      # Caddy on the host network can reach the container by port, which is how
+      # it reaches every other service on this box.
+      #
+      # 8100, not 8000: that port belongs to the other project's API.
+      - "127.0.0.1:8100:8000"
     healthcheck:
       # Readiness, not liveness. The engine is lazy, so the API starts happily
       # while Supabase is still unreachable -- this is what stops n8n from
@@ -140,7 +155,13 @@ services:
       # only copy.
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY is required}
       # Read by the workflow, not by n8n.
-      PDM_API_BASE_URL: https://api.${PDM_HOST:?PDM_HOST is required}
+      #
+      # The service name, not the public hostname. n8n and the API share this
+      # Compose bridge, so the workflow's calls stay inside it -- no public
+      # round trip, no dependency on Caddy or on DNS resolving for the pipeline
+      # to work, and nothing to break when the hostname changes. The public
+      # route exists for the Phase 7 frontend and for curl, not for this.
+      PDM_API_BASE_URL: http://api:8000
       # Must byte-equal the API's INGEST_API_TOKEN. They are the same secret
       # under two names because two different systems read them, and a mismatch
       # is a 401 on every write.
@@ -155,6 +176,11 @@ services:
       EXECUTIONS_DATA_MAX_AGE: "168"
       GENERIC_TIMEZONE: UTC
       TZ: UTC
+    ports:
+      # Loopback only, for the shared Caddy on the host network. 8101 rather
+      # than 5678 so the port number says which project it belongs to when
+      # something is listing listeners.
+      - "127.0.0.1:8101:5678"
     volumes:
       # n8n's SQLite database and its encrypted credentials. A named volume
       # rather than a bind mount: it is the one piece of state here that is not
@@ -168,38 +194,5 @@ services:
       retries: 3
       start_period: 60s
 
-  # ---------------------------------------------------------------------------
-  # TLS and the only thing exposed to the internet.
-  # ---------------------------------------------------------------------------
-  caddy:
-    image: docker.io/library/caddy:2.10-alpine
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-      n8n:
-        condition: service_healthy
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # `sslip.io` resolves any hostname containing an IP address to that IP, so
-      # these need no DNS records and no domain registration. Because they are
-      # real public hostnames, Caddy's default HTTP-01 challenge obtains a real
-      # Let's Encrypt certificate for them and browsers trust it.
-      #
-      # Buying a domain later is a one-line change here and nothing else.
-      PDM_HOST: ${PDM_HOST:?PDM_HOST is required}
-      API_HOST: api.${PDM_HOST:?PDM_HOST is required}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Certificates and ACME account keys. Losing this volume means re-issuing,
-      # which Let's Encrypt rate-limits -- so it is a named volume rather than
-      # sitting in the container's writable layer.
-      - caddy-data:/data
-      - caddy-config:/config
-
 volumes:
   n8n-data:
-  caddy-data:
-  caddy-config:

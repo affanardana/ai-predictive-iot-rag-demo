@@ -1,0 +1,66 @@
+# Two site blocks to ADD to the Caddyfile that already runs on this host.
+#
+#     ~/ifne/backend/deploy/vps/Caddyfile
+#
+# This file is a snippet, not a configuration. It is not mounted anywhere and
+# nothing reads it at runtime -- it exists so the two blocks are version
+# controlled rather than living only in a file on the server.
+#
+# ## Why sharing instead of running our own
+#
+# The other project's Caddy holds 0.0.0.0:80 and 0.0.0.0:443 through
+# `network_mode: host`. A second Caddy cannot have them, and the one that starts
+# second fails with `address already in use` in a way that looks like a bug in
+# whichever project lost. One reverse proxy per host is the right architecture
+# anyway: one place for certificates, one place for the ACME account.
+#
+# Both containers in `../compose.yaml` publish to host loopback, which is what
+# makes this work -- the shared Caddy is on the host network namespace and
+# reaches services by port, exactly as it already reaches its own API on
+# `localhost:8000`.
+#
+# ## Editing the other project's Caddyfile
+#
+# Back it up first, and validate before reloading, because a syntax error takes
+# down both projects:
+#
+#     cp ~/ifne/backend/deploy/vps/Caddyfile{,.bak}
+#     # ...append the two blocks below...
+#     docker exec vps-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+#     docker exec vps-caddy-1 caddy reload  --config /etc/caddy/Caddyfile
+#
+# `validate` reads without applying, so a mistake is a message rather than an
+# outage. If it complains, restore the backup and nothing has changed.
+#
+# ## The hostnames
+#
+# `sslip.io` resolves any hostname containing an IP address to that IP, so these
+# need no DNS records and no registration. Because they are real public
+# hostnames, Caddy obtains ordinary Let's Encrypt certificates for them through
+# its default HTTP-01 challenge and browsers trust them.
+#
+# `pdm-` and `pdm-api-` prefixes rather than bare names, so they cannot collide
+# with whatever the other project already serves.
+
+pdm.72-61-214-194.sslip.io {
+	encode gzip
+	# n8n's editor. It has its own account system, which is the only thing
+	# between the internet and a workflow that can write to the database --
+	# create the owner account immediately after first boot.
+	#
+	# `reverse_proxy` forwards the `Upgrade` header without configuration, which
+	# matters more than it sounds: the editor opens a persistent websocket at
+	# `/rest/push`, and a proxy that drops it leaves the workflows page spinning
+	# forever with nothing in n8n's logs to explain why.
+	reverse_proxy localhost:8101
+}
+
+pdm-api.72-61-214-194.sslip.io {
+	encode gzip
+	# Reads are deliberately unguarded -- the Phase 7 dashboard reads this from a
+	# browser, and requiring a secret there would mean shipping one to every
+	# client. The three routes that write require the `X-Ingest-Token` header,
+	# enforced in the application so the rule lives beside the domain it
+	# protects rather than in a proxy config.
+	reverse_proxy localhost:8100
+}
