@@ -74,6 +74,18 @@ node_modules/
 .vite/
 *.tsbuildinfo
 
+# The OpenAPI document the frontend's types are generated from, exported from
+# the API by `apps/api/scripts/export_openapi.py`.
+#
+# Derived, so it is not committed -- but the **generated** `schema.d.ts` is,
+# because it is what the frontend compiles against. That combination is what
+# makes drift visible: CI re-exports the document, regenerates the types, and
+# fails if the checked-in file differs.
+/apps/web/openapi.json
+/apps/web/dist/
+/apps/web/.env.local
+/apps/web/.env.*.local
+
 # --- Editors / OS ----------------------------------------------------------
 .vscode/
 .idea/

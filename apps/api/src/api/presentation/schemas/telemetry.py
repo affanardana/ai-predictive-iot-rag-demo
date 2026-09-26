@@ -63,6 +63,27 @@ class SeriesResolutionSchema(BaseModel):
     aggregation: Aggregation
 
 
+class ResolvedWindowSchema(BaseModel):
+    """The instants a series actually covers.
+
+    `window` names a duration; this says where that duration was applied. The
+    two can differ, and a client that assumed otherwise would misplace the
+    whole series on a time axis: the end is the newest stored reading whenever
+    that leads the wall clock, which is exactly what happens while a simulator
+    is being played back faster than real time.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    start: datetime
+    end: datetime = Field(
+        description=(
+            "Where the series ends. Later than the wall clock during a "
+            "fast-forwarded simulation, because it follows the data."
+        ),
+    )
+
+
 class TelemetrySeriesSchema(BaseModel):
     """A window of telemetry at a stated resolution."""
 
@@ -71,4 +92,5 @@ class TelemetrySeriesSchema(BaseModel):
     machine_id: str
     window: TimeWindow
     resolution: SeriesResolutionSchema
+    interval: ResolvedWindowSchema
     points: list[TelemetryPointSchema]

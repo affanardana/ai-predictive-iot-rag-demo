@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from api.domain.ports.events import MachineEvent
 from api.domain.ports.health import HealthStatus
 from tests.support.factories import DEFAULT_NOW
 
@@ -50,3 +51,25 @@ class StubHealthProbe:
         """Return the configured verdict, counting how often it was asked."""
         self.check_count += 1
         return HealthStatus(healthy=self._healthy, detail=self._detail)
+
+
+class RecordingEventPublisher:
+    """An event publisher that keeps what it was given.
+
+    A list rather than a count, because the assertions that matter are about
+    *which* changes were announced and in what order -- an ingest batch naming
+    two machines, or a scoring that raises an incident and so publishes two
+    events rather than one.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[MachineEvent] = []
+
+    async def publish(self, event: MachineEvent) -> None:
+        """Record the event."""
+        self.events.append(event)
+
+    @property
+    def kinds(self) -> list[str]:
+        """Return the recorded event kinds, for readable assertions."""
+        return [event.kind.value for event in self.events]

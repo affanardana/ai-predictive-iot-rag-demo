@@ -192,8 +192,15 @@ republishes identical identifiers and the API reports `accepted: 0`. Add
 `--session-id <something-new>` to ingest a genuinely new run.
 
 **Bound the stream.** At one reading per second this is roughly 3,600 executions
-an hour, and the container is billed for as long as it is warm. Stop the
-simulator when the demonstration ends rather than leaving it running.
+an hour, and every one is CPU on a box with a single core shared between n8n,
+the API, torch and — since Phase 8 — the simulator.
+
+This section used to end by telling you to stop the simulator when the
+demonstration finished, and to worry about a container "billed for as long as it
+is warm". Both were Modal-era advice for a Modal that no longer runs the
+simulator. A run started from the dashboard is bounded by its own duration, and
+the simulator container sits idle — healthy, costing nothing — until one is
+asked for.
 
 ## Diagnosing a failure
 

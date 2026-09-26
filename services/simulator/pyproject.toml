@@ -20,6 +20,15 @@ dependencies = [
 [project.optional-dependencies]
 mqtt = ["paho-mqtt>=2.1"]
 
+# The HTTP surface that lets the API start and stop a run. An extra for exactly
+# the reason `mqtt` is one, which is spelled out above and applies verbatim: as
+# a core dependency, FastAPI would ride into `ml`, and from there into the
+# inference and training images, to serve a control surface neither of them has.
+#
+# Like paho, it must be imported lazily. `simulator.cli` is imported by tests in
+# the default offline tier, where no extras are installed.
+control = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

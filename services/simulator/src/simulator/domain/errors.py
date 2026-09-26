@@ -22,3 +22,13 @@ class UnknownScenarioError(SimulationError):
         self.name = name
         self.known = known
         super().__init__(f"Unknown scenario '{name}'. Known scenarios: {', '.join(known)}.")
+
+
+class RunAlreadyActiveError(SimulationError):
+    """A machine already has a run in this process.
+
+    A machine's series is a pure function of its own session, so two runs on
+    different machines cannot interfere -- but two on the same machine would
+    interleave readings for one machine from two scenarios, and the risk band
+    they produce would describe neither.
+    """

@@ -56,7 +56,15 @@ __pycache__/
 /README.full.md
 
 # --- Node ---
+# The frontend, in full. Neither image copies anything from `apps/web` -- the
+# Vercel build does that, somewhere else entirely -- so the whole directory is
+# build context that would be uploaded and then discarded. `node_modules/`
+# alone is hundreds of megabytes.
+#
+# Matched at any depth as well, because `apps/web/node_modules` is the one that
+# actually exists.
 node_modules/
+/apps/web/
 
 # --- Test and dev configuration ---
 # None of it is imported by any container: the API installs its packages by

@@ -1,17 +1,24 @@
 # The self-hosted backend
 
-Three containers on one VPS. PostgreSQL stays on Supabase and the broker stays
+Four containers on one VPS. PostgreSQL stays on Supabase and the broker stays
 at `broker.emqx.io`, so neither is a container here — which is most of the
 reason this fits on a single core.
 
 ```text
 api        :8000   internal, published to 127.0.0.1:8100
 inference  :8001   internal only
+simulator  :8002   internal only — no host port, deliberately
 n8n        :5678   internal, published to 127.0.0.1:8101
 
 Supabase PostgreSQL   external, unchanged
 broker.emqx.io        external, unchanged
 ```
+
+**The simulator's missing port is load-bearing.** Its control surface has no
+authentication, so publishing it would put an open "start a run" endpoint on the
+internet. `apps/api/tests/unit/infrastructure/test_deployment_shape.py` fails if
+a `ports:` entry is ever added to that service, along with several other things
+that are easy to remove and impossible to notice.
 
 **There is no Caddy in `compose.yaml`, and that is deliberate.** This host
 already runs another project — `~/ifne` — whose Caddy holds `0.0.0.0:80` and
@@ -186,22 +193,63 @@ curl -X POST "https://pdm-api.72-61-214-194.sslip.io/api/v1/machines" \
   -d '{"machine_id":"M003","name":"Demo motor"}'
 ```
 
-Then, from the development machine:
-
-```powershell
-uv run python -m simulator realtime --demo --minutes 240 --tick-seconds 1 `
-  --started-at (Get-Date).ToUniversalTime().AddHours(-4).ToString("yyyy-MM-ddTHH:mm:ss+00:00") `
-  --sink mqtt
-```
+Then open the dashboard, pick M003, and press **Run the demonstration** on its
+machine page — or use `/simulation` for the full form. The simulator runs in its
+own container; **nothing needs starting on a laptop.** That is `PRD.md` AC-010,
+which this stack did not satisfy until Phase 8.
 
 Reading 60 arrives about a minute in, and that is when the first prediction
 fires.
 
-**Run it only while demonstrating.** One core is shared between n8n, the API and
-torch, and the simulator publishes one message per second indefinitely. The
-Modal deployment was already CPU-starved at this workload — it logged
-`waiting to be scheduled on a CPU worker` during a live run — and this box gives
-everything less CPU, not more.
+### Why the notional duration is 240 minutes
+
+The form asks for *simulated* time, not how long you watch. At the default
+one-minute sample interval, 240 minutes is 240 readings, and at one reading per
+second that is four minutes of watching replaying four hours of degradation.
+
+The minimum the form accepts is 60 minutes, and that floor is not arbitrary: the
+model needs 60 consecutive readings before it will predict anything. A shorter
+run produces no risk band and no incident, which is indistinguishable from a
+broken pipeline. `MASTERPLAN.md` §Phase 8's own example says `10 minutes`, which
+at these defaults would produce ten readings and never be scored — so the
+example is read as the wall-clock length of the demonstration rather than as the
+value for this field.
+
+### One core, now with five containers
+
+The simulator publishes about one message per second while a run is active, and
+this box shares a single core between it, n8n, the API and torch. The Modal
+deployment was already CPU-starved at this workload — it logged `waiting to be
+scheduled on a CPU worker` during a live run — and this box gives everything
+less CPU, not more.
+
+So the simulator service carries explicit limits in `compose.yaml`, and the API
+refuses more than three concurrent runs. Both are estimates rather than
+measurements; tune them from `docker stats` during a real run.
+
+**Runs are bounded, and an idle simulator costs nothing.** It sits healthy and
+does nothing until the dashboard asks it to start, so unlike the old manual
+workflow there is nothing to remember to stop.
+
+### Running more than one machine at once
+
+One run per machine, and several machines concurrently — M003 degrading while
+M005 overheats. The fleet view is built for it: a single global run would leave
+every other row frozen.
+
+Two runs on the *same* machine are refused, by the API and again by a unique
+index in the schema. They would interleave two scenarios' readings on one
+machine, and the risk band they produced would describe neither.
+
+### A second run appends to the charts
+
+Reset clears a run's record; it does not delete the telemetry it produced, and
+cannot — deleting stored readings is a destructive write, which would have to be
+guarded by the ingest token, which a browser cannot hold. So a machine's charts
+accumulate across runs.
+
+The windows hide it in practice: `recorded_at` is wall-clock and the charts are
+windowed, so an earlier run falls out of the one-hour view on its own.
 
 ## When something is wrong
 
@@ -212,6 +260,7 @@ everything less CPU, not more.
 | The other project's site 404s after an edit | Same. Restore the backup and reload again. |
 | `401 unauthorized` on every write | `INGEST_API_TOKEN` and `PDM_INGEST_TOKEN` disagree. They are set from one variable, so this means `.env` changed without a restart. |
 | `404 machine_not_found` | The machine is not registered. Registration is idempotent, so just run it. |
+| n8n crash-loops: `EACCES: permission denied, mkdir '/data/.n8n'` | The `n8n-data` volume is owned by root and n8n runs as uid 1000. The `n8n-permissions` service fixes this on every `up`, so seeing it means that service did not run — check `docker compose ps -a` shows it `Exited (0)`, and `docker compose up -d n8n-permissions` to run it by hand. |
 | n8n will not start: `Mismatching encryption keys` | `N8N_ENCRYPTION_KEY` changed after first boot. Restore the original, or wipe the `n8n-data` volume and start again — there is no third option. |
 | Inference container restarts repeatedly | `best.pt` or `artifact/normalization.json` is missing from `MODEL_DIR`. The service exits rather than serving degraded, so the log names the file. |
 | `inference_unavailable` (503) from the API | The inference container is down or still loading. On one core, a cold start takes a while. |

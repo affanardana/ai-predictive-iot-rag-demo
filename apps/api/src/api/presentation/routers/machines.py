@@ -15,6 +15,7 @@ from api.presentation.dependencies import (
     IngestTokenDep,
     ListIncidentsDep,
     ListMachinesDep,
+    ListSimulationsDep,
     RecordPredictionDep,
     RegisterMachineDep,
 )
@@ -24,6 +25,7 @@ from api.presentation.presenters import (
     to_machine_detail,
     to_machine_summary,
     to_prediction,
+    to_simulation_run_list,
     to_telemetry_series,
 )
 from api.presentation.schemas.incident import IncidentSchema
@@ -34,6 +36,7 @@ from api.presentation.schemas.machine import (
     RegisterMachineRequest,
 )
 from api.presentation.schemas.prediction import PredictionSchema
+from api.presentation.schemas.simulation import SimulationRunSchema
 from api.presentation.schemas.telemetry import TelemetrySeriesSchema
 
 router = APIRouter(prefix="/machines", tags=["machines"])
@@ -170,5 +173,28 @@ async def record_prediction(
     so the ordering the model depends on is the API's responsibility rather
     than a caller's.
     """
-    prediction = await use_case.execute(MachineId(machine_id))
-    return to_prediction(prediction)
+    result = await use_case.execute(MachineId(machine_id))
+    # Only the prediction is a response concern. Whether an incident was raised
+    # alongside it is announced on the event stream, and is already visible at
+    # `GET /machines/{id}`.
+    return to_prediction(result.prediction)
+
+
+@router.get(
+    "/{machine_id}/simulations",
+    response_model=list[SimulationRunSchema],
+    summary="List a machine's simulation runs",
+)
+async def list_machine_simulations(
+    machine_id: str,
+    use_case: ListSimulationsDep,
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+) -> list[SimulationRunSchema]:
+    """Return a machine's runs, newest first.
+
+    A sub-resource rather than a field on `GET /machines/{id}`, so the machine's
+    simulation panel can poll at its own cadence -- several seconds while a run
+    is active -- without dragging the whole detail response with it.
+    """
+    views = await use_case.execute(MachineId(machine_id), limit=limit)
+    return to_simulation_run_list(views)

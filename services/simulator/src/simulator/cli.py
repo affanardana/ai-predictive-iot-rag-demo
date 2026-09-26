@@ -8,7 +8,6 @@ built.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -27,8 +26,8 @@ from simulator.domain.ports import GroundTruthSink, TelemetrySink
 from simulator.domain.scenario import Scenario, profile_for
 from simulator.domain.session import SimulationSession
 from simulator.domain.timestamps import utc_now
+from simulator.infrastructure.broker import broker_settings_from_env
 from simulator.infrastructure.sinks import (
-    BrokerSettings,
     ConsoleGroundTruthSink,
     ConsoleTelemetrySink,
     DiscardingGroundTruthSink,
@@ -309,35 +308,13 @@ def _realtime_sinks(
     if args.sink == "console":
         return ConsoleTelemetrySink(), ConsoleGroundTruthSink()
     if args.sink == "mqtt":
-        settings = _broker_settings(session.session_id)
+        settings = broker_settings_from_env(session.session_id)
         # Ground truth is not published; see `DiscardingGroundTruthSink`.
         return (
             MqttTelemetrySink(connect_paho(settings), settings.topic_prefix),
             DiscardingGroundTruthSink(),
         )
     return _file_sinks(args.out, "jsonl")
-
-
-def _broker_settings(session_id: str) -> BrokerSettings:
-    """Read broker settings from the environment.
-
-    From the environment rather than the command line because one of them is a
-    password: a credential in `argv` is a credential in the shell history and in
-    every process listing. Everything else follows the same route for
-    consistency, and the defaults are EMQX's public broker.
-    """
-    return BrokerSettings(
-        host=os.environ.get("MQTT_HOST", DEFAULT_MQTT_HOST),
-        port=int(os.environ.get("MQTT_PORT", DEFAULT_MQTT_PORT)),
-        tls=os.environ.get("MQTT_TLS", "true").strip().lower() not in {"0", "false", "no"},
-        username=os.environ.get("MQTT_USERNAME") or None,
-        password=os.environ.get("MQTT_PASSWORD") or None,
-        topic_prefix=os.environ.get("MQTT_TOPIC_PREFIX", DEFAULT_MQTT_TOPIC_PREFIX),
-        # Derived from the session, so two runs cannot collide. paho's default
-        # is random, and a duplicate client id has the broker evict one of the
-        # two connections rather than refusing the second.
-        client_id=f"pdm-sim-{session_id}",
-    )
 
 
 def _report(rows: Sequence[tuple[str, str]], stream: TextIO | None = None) -> None:

@@ -13,6 +13,7 @@ from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.time_window import Aggregation, TimeWindow
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
 from tests.support.factories import DEFAULT_NOW, make_machine, make_reading, make_telemetry
+from tests.support.fakes import FixedClock
 
 
 def _use_case(
@@ -173,3 +174,144 @@ async def test_aggregates_with_the_mean(
 
     assert len(series.points) == 1
     assert series.points[0].reading.temperature == pytest.approx(65.0)
+
+
+async def test_returns_points_that_lead_the_clock(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    """Stored data ahead of the wall clock still produces a series.
+
+    This is the regression that made the dashboard impossible. The simulator
+    advances `recorded_at` at `sample_interval x index` while its paced loop
+    sleeps `tick_seconds` per tick, so played back at 300x the newest stored
+    reading is an hour ahead of real time within twelve seconds. Every window
+    bounded by `clock.now()` then selects nothing, and every chart is empty
+    during the demonstration the project exists to give.
+    """
+    ahead = DEFAULT_NOW + timedelta(hours=3)
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        await uow.telemetry.add_many_idempotent(
+            [
+                make_telemetry(event_id="newest", machine_id="M003", recorded_at=ahead),
+                make_telemetry(
+                    event_id="within",
+                    machine_id="M003",
+                    recorded_at=ahead - timedelta(minutes=30),
+                ),
+                make_telemetry(
+                    event_id="too-old",
+                    machine_id="M003",
+                    recorded_at=ahead - timedelta(hours=2),
+                ),
+            ]
+        )
+
+    series = await _use_case(uow_factory, FixedClock(DEFAULT_NOW)).execute(
+        MachineId("M003"), TimeWindow.ONE_HOUR
+    )
+
+    assert [point.timestamp for point in series.points] == [
+        ahead - timedelta(minutes=30),
+        ahead,
+    ]
+    # And the response says where the window landed, so a client can place the
+    # series on a time axis instead of assuming it ends at the browser's clock.
+    assert series.interval.end == ahead
+    assert series.interval.start == ahead - timedelta(hours=1)
+
+
+async def test_window_ends_at_the_clock_when_data_does_not_lead_it(
+    uow_factory: InMemoryUnitOfWorkFactory, clock: Clock
+) -> None:
+    """Ordinary operation is unchanged: the anchor is the clock.
+
+    The anchor follows the data only when the data is ahead of it. A machine
+    reporting normally must produce exactly the window it always did, or this
+    fix would have redefined every chart in the product rather than repairing
+    one case.
+    """
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        await uow.telemetry.add_many_idempotent(
+            [make_telemetry(event_id="recent", machine_id="M003", recorded_at=DEFAULT_NOW)]
+        )
+
+    series = await _use_case(uow_factory, clock).execute(MachineId("M003"), TimeWindow.ONE_HOUR)
+
+    assert series.interval.end == DEFAULT_NOW
+    assert series.interval.start == DEFAULT_NOW - timedelta(hours=1)
+
+
+async def test_a_silent_machine_reports_an_empty_window_not_stale_data(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    """A machine that stopped reporting has an empty window, not an old one.
+
+    The distinction the anchor deliberately preserves. `end` is the *later* of
+    the clock and the newest reading, never simply the newest reading: were it
+    the latter, this machine's final hour of data would be returned under a
+    "1h" label, quietly redefining the window to mean "the last hour of
+    whatever data exists". Staleness is already carried by `is_reporting` and
+    by the reading's own timestamp, and neither of those should be a chart's
+    job to express.
+    """
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        await uow.telemetry.add_many_idempotent(
+            [
+                make_telemetry(
+                    event_id="last-gasp",
+                    machine_id="M003",
+                    recorded_at=DEFAULT_NOW - timedelta(hours=5),
+                )
+            ]
+        )
+
+    series = await _use_case(uow_factory, FixedClock(DEFAULT_NOW)).execute(
+        MachineId("M003"), TimeWindow.ONE_HOUR
+    )
+
+    assert series.points == []
+    assert series.interval.end == DEFAULT_NOW
+
+
+async def test_an_empty_store_anchors_to_the_clock(
+    uow_factory: InMemoryUnitOfWorkFactory, clock: Clock
+) -> None:
+    """A registered machine that has never reported still answers.
+
+    There is no newest reading to anchor to, so the clock is the only sensible
+    choice -- and a machine in this state is ordinary on a fresh deployment.
+    """
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+
+    series = await _use_case(uow_factory, clock).execute(MachineId("M003"), TimeWindow.ONE_HOUR)
+
+    assert series.points == []
+    assert series.interval.end == DEFAULT_NOW
+    assert series.interval.start == DEFAULT_NOW - timedelta(hours=1)
+
+
+async def test_the_resolved_window_is_the_window_that_was_asked_for(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    """Whatever the anchor, the interval is exactly one window long.
+
+    The anchor moves; the duration must not. A series that quietly covered a
+    different span would make every chart's x-axis a lie.
+    """
+    ahead = DEFAULT_NOW + timedelta(hours=3)
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        await uow.telemetry.add_many_idempotent(
+            [make_telemetry(event_id="newest", machine_id="M003", recorded_at=ahead)]
+        )
+
+    for window in TimeWindow:
+        series = await _use_case(uow_factory, FixedClock(DEFAULT_NOW)).execute(
+            MachineId("M003"), window
+        )
+        assert series.interval.duration == window.duration
+        assert series.interval.end == ahead

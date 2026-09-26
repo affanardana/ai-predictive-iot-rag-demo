@@ -11,11 +11,17 @@ from datetime import timedelta
 
 import pytest
 
-from api.domain.errors import IncidentNotFoundError
+from api.domain.errors import (
+    IncidentNotFoundError,
+    PersistenceError,
+    SimulationRunNotFoundError,
+)
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
 from api.domain.value_objects.incident_status import IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
+from api.domain.value_objects.run_status import RunStatus
+from api.domain.value_objects.simulation_scenario import SimulationScenario
 from api.domain.value_objects.time_window import Aggregation
 from tests.support.factories import (
     DEFAULT_NOW,
@@ -23,6 +29,7 @@ from tests.support.factories import (
     make_machine,
     make_prediction,
     make_reading,
+    make_simulation_run,
     make_telemetry,
 )
 
@@ -187,6 +194,120 @@ class TelemetryRepositoryContract:
         """A machine that has never reported has no latest record."""
         async with uow_factory() as uow:
             assert await uow.telemetry.latest_for(MachineId("M001")) is None
+
+    async def test_latest_for_many_agrees_with_latest_for(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The bulk read names the same record as the single read, every time.
+
+        This is the assertion the fleet view depends on. `GET /api/v1/machines`
+        reads every machine's latest record in one query while
+        `GET /api/v1/machines/{id}` reads one -- and the row that links to a
+        machine must show the same reading as the page it opens. Two queries
+        that disagree about which record is newest would make the dashboard
+        contradict itself.
+
+        The two rows sharing a timestamp are the point: without a tie-break the
+        answer would depend on the query plan, and this test would pass or fail
+        by luck.
+        """
+        async with uow_factory() as uow:
+            for machine_id in ("M001", "M002"):
+                await uow.machines.add(make_machine(machine_id))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(
+                        event_id="m1-old",
+                        machine_id="M001",
+                        recorded_at=DEFAULT_NOW - timedelta(hours=1),
+                    ),
+                    make_telemetry(event_id="m1-new-a", machine_id="M001", recorded_at=DEFAULT_NOW),
+                    make_telemetry(event_id="m1-new-b", machine_id="M001", recorded_at=DEFAULT_NOW),
+                    make_telemetry(
+                        event_id="m2-old",
+                        machine_id="M002",
+                        recorded_at=DEFAULT_NOW - timedelta(days=3),
+                    ),
+                    make_telemetry(
+                        event_id="m2-new",
+                        machine_id="M002",
+                        recorded_at=DEFAULT_NOW - timedelta(minutes=5),
+                    ),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            bulk = await uow.telemetry.latest_for_many(
+                [MachineId("M001"), MachineId("M002"), MachineId("M003")]
+            )
+
+        assert set(bulk) == {MachineId("M001"), MachineId("M002")}
+        for machine_id in ("M001", "M002"):
+            async with uow_factory() as uow:
+                single = await uow.telemetry.latest_for(MachineId(machine_id))
+            assert single is not None
+            assert bulk[MachineId(machine_id)].event_id == single.event_id
+
+    async def test_latest_for_many_is_scoped_to_the_machines_asked_for(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A machine that was not asked about never appears in the result.
+
+        The fleet read builds one mapping for the whole registry, so an adapter
+        that ignored the identifier list would silently attach one machine's
+        reading to another -- the worst possible failure for a monitoring view,
+        and one that looks like plausible data.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.machines.add(make_machine("M002"))
+            await uow.telemetry.add_many_idempotent(
+                [
+                    make_telemetry(event_id="seen", machine_id="M001"),
+                    make_telemetry(event_id="unasked", machine_id="M002"),
+                ]
+            )
+
+        async with uow_factory() as uow:
+            bulk = await uow.telemetry.latest_for_many([MachineId("M001")])
+
+        assert set(bulk) == {MachineId("M001")}
+        assert bulk[MachineId("M001")].event_id == "seen"
+
+    async def test_latest_for_many_is_empty_for_an_empty_request(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Being asked about nothing returns nothing, and does not error.
+
+        A fleet with no registered machines is the ordinary state on a fresh
+        deployment, so it must not be a query the adapter cannot run.
+        """
+        async with uow_factory() as uow:
+            await uow.telemetry.add_many_idempotent([make_telemetry(event_id="orphan")])
+
+        async with uow_factory() as uow:
+            assert await uow.telemetry.latest_for_many([]) == {}
+
+    async def test_latest_for_many_omits_machines_that_never_reported(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A silent machine is absent rather than mapped to None.
+
+        The distinction matters at the call site: absent means "no reading
+        exists", and the fleet summary renders that as `is_reporting: false`
+        rather than as a reading of zero.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.machines.add(make_machine("M002"))
+            await uow.telemetry.add_many_idempotent(
+                [make_telemetry(event_id="only-m1", machine_id="M001")]
+            )
+
+        async with uow_factory() as uow:
+            bulk = await uow.telemetry.latest_for_many([MachineId("M001"), MachineId("M002")])
+
+        assert MachineId("M002") not in bulk
 
     async def test_latest_records_returns_the_most_recent_in_chronological_order(
         self, uow_factory: UnitOfWorkFactory
@@ -607,6 +728,60 @@ class PredictionRepositoryContract:
         async with uow_factory() as uow:
             assert await uow.predictions.latest_for(MachineId("M001")) is None
 
+    async def test_latest_for_many_agrees_with_latest_for(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The bulk read names the same prediction as the single read.
+
+        The fleet table shows each machine's failure probability, and the
+        machine page shows the same number. They are two different queries, so
+        they are asserted to be one answer.
+
+        Two predictions share an instant here deliberately: without a
+        tie-break, which one is "latest" would depend on the plan.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.machines.add(make_machine("M002"))
+            await uow.predictions.add(
+                make_prediction(
+                    prediction_id="m1-old",
+                    machine_id="M001",
+                    predicted_at=DEFAULT_NOW - timedelta(hours=1),
+                )
+            )
+            for suffix in ("a", "b"):
+                await uow.predictions.add(
+                    make_prediction(
+                        prediction_id=f"m1-tie-{suffix}",
+                        machine_id="M001",
+                        predicted_at=DEFAULT_NOW,
+                    )
+                )
+            await uow.predictions.add(make_prediction(prediction_id="m2-only", machine_id="M002"))
+
+        async with uow_factory() as uow:
+            bulk = await uow.predictions.latest_for_many(
+                [MachineId("M001"), MachineId("M002"), MachineId("M003")]
+            )
+
+        assert set(bulk) == {MachineId("M001"), MachineId("M002")}
+        for machine_id in ("M001", "M002"):
+            async with uow_factory() as uow:
+                single = await uow.predictions.latest_for(MachineId(machine_id))
+            assert single is not None
+            assert bulk[MachineId(machine_id)].prediction_id == single.prediction_id
+
+    async def test_latest_for_many_is_empty_for_an_empty_request(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Being asked about nothing returns nothing, and does not error."""
+        async with uow_factory() as uow:
+            await uow.predictions.add(make_prediction(prediction_id="orphan"))
+
+        async with uow_factory() as uow:
+            assert await uow.predictions.latest_for_many([]) == {}
+
     async def test_returns_most_recent_first(self, uow_factory: UnitOfWorkFactory) -> None:
         """History is newest-first so the newest score is the first element.
 
@@ -760,3 +935,282 @@ class IncidentRepositoryContract:
 
         assert [incident.incident_id for incident in critical_open] == ["inc-critical"]
         assert len(all_incidents) == 3
+
+    async def test_open_counts_agrees_with_is_open(self, uow_factory: UnitOfWorkFactory) -> None:
+        """The counted statuses are exactly the ones the domain calls open.
+
+        `is_open` is true for OPEN *and* ACKNOWLEDGED -- an acknowledged
+        incident still needs attention until it is resolved or dismissed. The
+        count is computed in SQL while `is_open` is computed in Python, so the
+        two are asserted against each other rather than trusted to agree.
+
+        A machine with no open incidents is absent from the mapping; the caller
+        reads that as zero.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M001"))
+            await uow.machines.add(make_machine("M002"))
+            await uow.machines.add(make_machine("M003"))
+
+            incidents = {
+                "open": make_incident(incident_id="a", machine_id="M001"),
+                "acknowledged": make_incident(incident_id="b", machine_id="M001"),
+                "resolved": make_incident(incident_id="c", machine_id="M001"),
+                "dismissed": make_incident(incident_id="d", machine_id="M002"),
+            }
+            incidents["acknowledged"].acknowledge()
+            incidents["resolved"].resolve()
+            incidents["dismissed"].dismiss()
+            for incident in incidents.values():
+                await uow.incidents.add(incident)
+
+        machine_ids = [MachineId("M001"), MachineId("M002"), MachineId("M003")]
+        async with uow_factory() as uow:
+            counts = await uow.incidents.open_counts_by_machine(machine_ids)
+            expected = {}
+            for machine_id in machine_ids:
+                listed = await uow.incidents.list_for_machine(machine_id, limit=100)
+                open_count = sum(1 for incident in listed if incident.is_open)
+                if open_count:
+                    expected[machine_id] = open_count
+
+        assert counts == expected
+        assert counts[MachineId("M001")] == 2
+        assert MachineId("M002") not in counts
+        assert MachineId("M003") not in counts
+
+    async def test_open_counts_is_empty_for_an_empty_request(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Being asked about nothing returns nothing, and does not error."""
+        async with uow_factory() as uow:
+            await uow.incidents.add(make_incident(incident_id="orphan"))
+
+        async with uow_factory() as uow:
+            assert await uow.incidents.open_counts_by_machine([]) == {}
+
+
+class SimulationRunRepositoryContract:
+    """Behaviour every `SimulationRunRepository` must exhibit."""
+
+    async def test_round_trips_a_run(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Every field a run is recorded with comes back unchanged.
+
+        The configuration is stored rather than referenced so the API can
+        re-issue a run without asking anyone -- which only works if the plan
+        survives the round trip intact.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            await uow.simulations.add(
+                make_simulation_run(
+                    session_id="sim-bd-1a2b3c4d",
+                    machine_id="M003",
+                    seed=20_260_923,
+                    minutes=240,
+                    completed_ticks=37,
+                )
+            )
+
+        async with uow_factory() as uow:
+            run = await uow.simulations.get("sim-bd-1a2b3c4d")
+
+        assert run is not None
+        assert run.machine_id == MachineId("M003")
+        assert run.scenario is SimulationScenario.BEARING_DEGRADATION
+        assert run.seed == 20_260_923
+        assert run.tick_count == 240
+        assert run.completed_ticks == 37
+        assert run.status is RunStatus.PENDING
+
+    async def test_get_returns_none_for_an_unknown_run(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """An unknown identifier is absent, not an error."""
+        async with uow_factory() as uow:
+            assert await uow.simulations.get("never-existed") is None
+
+    async def test_update_persists_a_status_change(self, uow_factory: UnitOfWorkFactory) -> None:
+        """The lifecycle is stored, not merely returned to the caller."""
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            await uow.simulations.add(make_simulation_run(machine_id="M003"))
+
+        async with uow_factory() as uow:
+            run = await uow.simulations.get("sim-bd-test")
+            assert run is not None
+            run.mark_running()
+            run.record_progress(12, DEFAULT_NOW)
+            await uow.simulations.update(run)
+
+        async with uow_factory() as uow:
+            stored = await uow.simulations.get("sim-bd-test")
+
+        assert stored is not None
+        assert stored.status is RunStatus.RUNNING
+        assert stored.completed_ticks == 12
+
+    async def test_update_raises_for_an_unknown_run(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Updating a run that was never recorded is an error, not an insert.
+
+        An upsert would let a caller believe it had updated a run that does not
+        exist, and the SQL adapter cannot update a row that is not there -- so
+        the two adapters would disagree about what just happened.
+        """
+        with pytest.raises(SimulationRunNotFoundError):
+            async with uow_factory() as uow:
+                await uow.simulations.update(make_simulation_run(session_id="absent"))
+
+    async def test_delete_removes_a_run(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Deleting is what `reset` does to a finished run."""
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            await uow.simulations.add(make_simulation_run(machine_id="M003"))
+
+        async with uow_factory() as uow:
+            await uow.simulations.delete("sim-bd-test")
+
+        async with uow_factory() as uow:
+            assert await uow.simulations.get("sim-bd-test") is None
+
+    async def test_delete_raises_for_an_unknown_run(self, uow_factory: UnitOfWorkFactory) -> None:
+        """Deleting something that is not there is reported, not ignored."""
+        with pytest.raises(SimulationRunNotFoundError):
+            async with uow_factory() as uow:
+                await uow.simulations.delete("never-existed")
+
+    async def test_a_machine_may_have_only_one_active_run(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Two active runs on one machine are refused by the store itself.
+
+        The check in `StartSimulation` reports a clean conflict, so reaching the
+        storage layer means two requests raced. The constraint is nevertheless
+        enforced here, in the schema and in this adapter alike, because the
+        alternative is two scenarios interleaving readings on one machine with
+        nothing to explain the resulting risk band.
+
+        Both adapters must raise the same error: the SQL one translates its
+        driver's unique violation, so this asserts the domain error rather than
+        anything driver-specific.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            await uow.simulations.add(
+                make_simulation_run(session_id="sim-first", machine_id="M003")
+            )
+
+        with pytest.raises(PersistenceError):
+            async with uow_factory() as uow:
+                await uow.simulations.add(
+                    make_simulation_run(session_id="sim-second", machine_id="M003")
+                )
+
+    async def test_a_finished_run_does_not_block_the_next_one(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The constraint is over *active* runs, not all of them.
+
+        Without this, a machine could be demonstrated exactly once and never
+        again -- the first run would hold the slot forever.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            finished = make_simulation_run(session_id="sim-first", machine_id="M003")
+            finished.mark_running()
+            finished.mark_completed(DEFAULT_NOW)
+            await uow.simulations.add(finished)
+
+        async with uow_factory() as uow:
+            await uow.simulations.add(
+                make_simulation_run(session_id="sim-second", machine_id="M003")
+            )
+
+        async with uow_factory() as uow:
+            active = await uow.simulations.active_for_machine(MachineId("M003"))
+            assert active is not None
+            assert active.session_id == "sim-second"
+
+    async def test_runs_on_different_machines_do_not_block_each_other(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """Concurrency is per machine, which is what the fleet view needs."""
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            await uow.machines.add(make_machine("M004"))
+            await uow.simulations.add(make_simulation_run(session_id="sim-m3", machine_id="M003"))
+            await uow.simulations.add(make_simulation_run(session_id="sim-m4", machine_id="M004"))
+
+        async with uow_factory() as uow:
+            assert await uow.simulations.count_active() == 2
+
+    async def test_active_for_machine_ignores_finished_runs(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """A stopped run is not active, however recently it ran."""
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            stopped = make_simulation_run(session_id="sim-done", machine_id="M003")
+            stopped.mark_running()
+            stopped.mark_stopped(DEFAULT_NOW)
+            await uow.simulations.add(stopped)
+
+        async with uow_factory() as uow:
+            assert await uow.simulations.active_for_machine(MachineId("M003")) is None
+
+    async def test_list_recent_is_newest_first_and_bounded(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        """The ordering a run list wants, and a bound on how much of it.
+
+        One machine each: they are all `PENDING`, and the store refuses two
+        active runs on one machine -- which is itself asserted above.
+        """
+        async with uow_factory() as uow:
+            for index in range(5):
+                machine_id = f"M{index + 1:03d}"
+                await uow.machines.add(make_machine(machine_id))
+                await uow.simulations.add(
+                    make_simulation_run(
+                        session_id=f"sim-{index}",
+                        machine_id=machine_id,
+                        created_at=DEFAULT_NOW + timedelta(minutes=index),
+                    )
+                )
+
+        async with uow_factory() as uow:
+            recent = await uow.simulations.list_recent(limit=3)
+
+        assert [run.session_id for run in recent] == ["sim-4", "sim-3", "sim-2"]
+
+    async def test_list_for_machine_is_scoped(self, uow_factory: UnitOfWorkFactory) -> None:
+        """One machine's runs never include another's."""
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+            await uow.machines.add(make_machine("M004"))
+            await uow.simulations.add(make_simulation_run(session_id="sim-m3", machine_id="M003"))
+            await uow.simulations.add(make_simulation_run(session_id="sim-m4", machine_id="M004"))
+
+        async with uow_factory() as uow:
+            runs = await uow.simulations.list_for_machine(MachineId("M003"), limit=10)
+
+        assert [run.session_id for run in runs] == ["sim-m3"]
+
+    async def test_a_rolled_back_run_is_not_stored(self, uow_factory: UnitOfWorkFactory) -> None:
+        """The unit of work discards a run when the block raises.
+
+        The in-memory store snapshots on entry, and `InMemoryStore.restore`
+        lists every collection by hand -- so a new one added to the store but
+        not to `restore` would leave this passing in SQL and failing here, or
+        worse, the other way round in production.
+        """
+        async with uow_factory() as uow:
+            await uow.machines.add(make_machine("M003"))
+
+        with pytest.raises(RuntimeError):
+            async with uow_factory() as uow:
+                await uow.simulations.add(make_simulation_run(machine_id="M003"))
+                raise RuntimeError("something went wrong mid-transaction")
+
+        async with uow_factory() as uow:
+            assert await uow.simulations.get("sim-bd-test") is None

@@ -19,10 +19,17 @@ from api.application.use_cases import (
     IngestTelemetry,
     ListIncidents,
     ListMachines,
+    ListSimulations,
     RecordPrediction,
     RegisterMachine,
+    ReportSimulationState,
+    ResetSimulation,
+    StartSimulation,
+    StopSimulation,
+    UpdateIncidentStatus,
 )
 from api.composition.container import Container
+from api.domain.ports.events import EventSubscriber
 from api.presentation.errors.authentication import AuthenticationError
 
 
@@ -74,6 +81,46 @@ def get_register_machine(container: ContainerDep) -> RegisterMachine:
     return container.register_machine
 
 
+def get_update_incident_status(container: ContainerDep) -> UpdateIncidentStatus:
+    """Resolve the incident status use case."""
+    return container.update_incident_status
+
+
+def get_list_simulations(container: ContainerDep) -> ListSimulations:
+    """Resolve the simulation listing use case."""
+    return container.list_simulations
+
+
+def get_start_simulation(container: ContainerDep) -> StartSimulation:
+    """Resolve the start-simulation use case."""
+    return container.start_simulation
+
+
+def get_stop_simulation(container: ContainerDep) -> StopSimulation:
+    """Resolve the stop-simulation use case."""
+    return container.stop_simulation
+
+
+def get_reset_simulation(container: ContainerDep) -> ResetSimulation:
+    """Resolve the reset-simulation use case."""
+    return container.reset_simulation
+
+
+def get_report_simulation_state(container: ContainerDep) -> ReportSimulationState:
+    """Resolve the run state-report use case."""
+    return container.report_simulation_state
+
+
+def get_event_subscriber(container: ContainerDep) -> EventSubscriber:
+    """Resolve the event stream's subscriber half.
+
+    Typed as the domain protocol, not the broadcaster. That is what lets the
+    presentation layer open a stream without naming an adapter, which the
+    "presentation does not import infrastructure" contract forbids.
+    """
+    return container.event_subscriber
+
+
 def require_ingest_token(
     container: ContainerDep,
     x_ingest_token: Annotated[str | None, Header()] = None,
@@ -110,6 +157,13 @@ ListIncidentsDep = Annotated[ListIncidents, Depends(get_list_incidents)]
 RecordPredictionDep = Annotated[RecordPrediction, Depends(get_record_prediction)]
 IngestTelemetryDep = Annotated[IngestTelemetry, Depends(get_ingest_telemetry)]
 RegisterMachineDep = Annotated[RegisterMachine, Depends(get_register_machine)]
+UpdateIncidentStatusDep = Annotated[UpdateIncidentStatus, Depends(get_update_incident_status)]
+EventSubscriberDep = Annotated[EventSubscriber, Depends(get_event_subscriber)]
+ListSimulationsDep = Annotated[ListSimulations, Depends(get_list_simulations)]
+StartSimulationDep = Annotated[StartSimulation, Depends(get_start_simulation)]
+StopSimulationDep = Annotated[StopSimulation, Depends(get_stop_simulation)]
+ResetSimulationDep = Annotated[ResetSimulation, Depends(get_reset_simulation)]
+ReportSimulationStateDep = Annotated[ReportSimulationState, Depends(get_report_simulation_state)]
 
 #: Declared on a router rather than per route, so a new write cannot be added
 #: to it and silently go unauthenticated.

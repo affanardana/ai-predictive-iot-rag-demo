@@ -45,15 +45,22 @@ class MachineSummarySchema(BaseModel):
     machine that is registered but silent has neither, and one that has stopped
     reporting keeps its last known values so staleness is visible rather than
     presenting as health.
+
+    **Nullable but not optional**, and the distinction reaches the frontend.
+    Pydantic gives a field with a default a `null` type *and* removes it from
+    OpenAPI's `required` list, so a generated client sees `T | null | undefined`
+    and a check for `null` alone leaves `undefined` in the else-branch -- which
+    compiles and then throws on the first machine that has not been scored. No
+    route uses `exclude_none`, so these are always sent; declaring them required
+    makes the generated types say what the wire already does.
     """
 
     model_config = ConfigDict(frozen=True)
 
     machine: MachineSchema
-    latest_telemetry: TelemetryRecordSchema | None = None
-    latest_prediction: PredictionSchema | None = None
+    latest_telemetry: TelemetryRecordSchema | None
+    latest_prediction: PredictionSchema | None
     risk_level: RiskLevel | None = Field(
-        default=None,
         description="Risk band from the latest prediction; null if none exists yet.",
     )
     open_incident_count: int = Field(ge=0)

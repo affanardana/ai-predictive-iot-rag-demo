@@ -8,6 +8,7 @@ from api.infrastructure.persistence.sql.repositories import (
     SqlIncidentRepository,
     SqlMachineRepository,
     SqlPredictionRepository,
+    SqlSimulationRunRepository,
     SqlTelemetryRepository,
 )
 from api.infrastructure.persistence.sql.session import create_session_factory
@@ -33,6 +34,7 @@ class SqlUnitOfWork:
         self.telemetry = SqlTelemetryRepository(self._session, dialect_name)
         self.predictions = SqlPredictionRepository(self._session)
         self.incidents = SqlIncidentRepository(self._session)
+        self.simulations = SqlSimulationRunRepository(self._session)
 
     async def __aenter__(self) -> SqlUnitOfWork:
         """Enter the transactional scope."""

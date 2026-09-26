@@ -16,11 +16,17 @@ from api.domain.errors import (
     IncidentNotFoundError,
     InsufficientTelemetryHistoryError,
     InvalidIncidentTransitionError,
+    InvalidRunTransitionError,
     InvalidTelemetryError,
     MachineNotFoundError,
     PersistenceError,
     PredictionUnavailableError,
     RepositoryUnavailableError,
+    SimulationAlreadyRunningError,
+    SimulationRunActiveError,
+    SimulationRunNotFoundError,
+    SimulationUnavailableError,
+    TooManySimulationsError,
 )
 
 
@@ -38,6 +44,16 @@ ERROR_CATALOG: Mapping[type[DomainError], ErrorMapping] = {
     # A conflict rather than a validation error: the request was well-formed,
     # the incident's current state simply does not permit the move.
     InvalidIncidentTransitionError: ErrorMapping(409, "invalid_incident_transition"),
+    SimulationRunNotFoundError: ErrorMapping(404, "simulation_run_not_found"),
+    # A conflict, not a validation error: the request was fine, and the
+    # machine's or the fleet's current state is what refuses it.
+    SimulationAlreadyRunningError: ErrorMapping(409, "simulation_already_running"),
+    TooManySimulationsError: ErrorMapping(409, "too_many_simulations"),
+    SimulationRunActiveError: ErrorMapping(409, "simulation_active"),
+    InvalidRunTransitionError: ErrorMapping(409, "invalid_run_transition"),
+    # The simulator container is down or refused. 503 for the same reason
+    # inference gets one: retryable, and not the caller's mistake.
+    SimulationUnavailableError: ErrorMapping(503, "simulation_unavailable"),
     InvalidTelemetryError: ErrorMapping(422, "invalid_telemetry"),
     # The request was fine and the machine exists; its history is too short to
     # build a window. Mapped explicitly rather than left to the MRO walk, which

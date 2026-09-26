@@ -10,6 +10,7 @@ from api.domain.entities.incident import Incident
 from api.domain.entities.prediction import PREDICTION_WINDOW_READINGS, Prediction
 from api.domain.errors import InsufficientTelemetryHistoryError, MachineNotFoundError
 from api.domain.ports.clock import Clock
+from api.domain.ports.events import EventKind, EventPublisher, MachineEvent
 from api.domain.ports.predictor import ModelOutput, Predictor
 from api.domain.ports.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from api.domain.services.incident_policy import IncidentPolicy
@@ -17,6 +18,21 @@ from api.domain.services.risk_level_classifier import RiskLevelClassifier
 from api.domain.value_objects.failure_probability import FailureProbability
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.sensor_reading import SensorReading
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionResult:
+    """A scoring outcome: what the model said, and the incident it caused.
+
+    The incident is reported rather than left for the caller to look up,
+    because the distinction that matters downstream is between "scored, nothing
+    changed" and "scored, and this machine now has an incident" -- and only one
+    place knows which. `IngestResult` and `RegistrationResult` already have
+    this shape.
+    """
+
+    prediction: Prediction
+    incident: Incident | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,8 +50,9 @@ class RecordPrediction:
     clock: Clock
     classifier: RiskLevelClassifier
     incident_policy: IncidentPolicy
+    events: EventPublisher
 
-    async def execute(self, machine_id: MachineId) -> Prediction:
+    async def execute(self, machine_id: MachineId) -> PredictionResult:
         """Score one machine, recording a prediction and any incident.
 
         Raises:
@@ -51,7 +68,19 @@ class RecordPrediction:
         # latency.
         output = await self.predictor.predict(readings)
 
-        return await self._persist(machine_id, output, readings[-1])
+        result = await self._persist(machine_id, output, readings[-1])
+
+        # After the transaction has committed. A subscriber told about a
+        # prediction that then rolled back would refetch and find nothing,
+        # which reads as a bug in the dashboard rather than in the write.
+        await self.events.publish(
+            MachineEvent(kind=EventKind.PREDICTION_RECORDED, machine_id=machine_id)
+        )
+        if result.incident is not None:
+            await self.events.publish(
+                MachineEvent(kind=EventKind.INCIDENT_RAISED, machine_id=machine_id)
+            )
+        return result
 
     async def _read_window(self, machine_id: MachineId) -> Sequence[SensorReading]:
         """Return the readings to score, or report how short the history fell.
@@ -78,7 +107,7 @@ class RecordPrediction:
         machine_id: MachineId,
         output: ModelOutput,
         latest: SensorReading,
-    ) -> Prediction:
+    ) -> PredictionResult:
         """Store the prediction, and any incident it raises, in one transaction."""
         # `FailureProbability` clamps and rejects NaN, so a model that returned
         # nonsense fails here rather than reaching the CHECK constraint.
@@ -101,7 +130,7 @@ class RecordPrediction:
             if incident is not None:
                 await uow.incidents.add(incident)
 
-        return prediction
+        return PredictionResult(prediction=prediction, incident=incident)
 
     async def _incident_for(
         self,

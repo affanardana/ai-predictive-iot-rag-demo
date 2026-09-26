@@ -34,3 +34,20 @@ class IncidentSchema(BaseModel):
         default=None,
         description="The prediction that triggered this incident, when known.",
     )
+
+
+class UpdateIncidentStatusRequest(BaseModel):
+    """A requested lifecycle transition.
+
+    The target is a status rather than an action, mirroring the domain: the
+    permitted moves are a table over statuses, and expressing the request the
+    same way keeps the router from holding a second copy of that table.
+
+    `OPEN` is a valid value of this enum but never a valid target -- nothing
+    transitions back to it. That is a 409 rather than a 422, because the request
+    is well formed and the incident's current state is what refuses it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    status: IncidentStatus

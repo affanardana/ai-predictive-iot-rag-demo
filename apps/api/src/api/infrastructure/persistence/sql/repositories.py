@@ -6,7 +6,7 @@ exception becomes a domain `PersistenceError` before it leaves this module.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -14,17 +14,19 @@ from sqlalchemy import DateTime, Integer, func, select, type_coerce
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql import ColumnElement
 
 from api.domain.entities.incident import Incident
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
+from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
-from api.domain.errors import IncidentNotFoundError
-from api.domain.value_objects.incident_status import IncidentStatus
+from api.domain.errors import IncidentNotFoundError, SimulationRunNotFoundError
+from api.domain.value_objects.incident_status import OPEN_INCIDENT_STATUSES, IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
+from api.domain.value_objects.run_status import ACTIVE_RUN_STATUSES
 from api.domain.value_objects.sensor_reading import SensorReading
 from api.domain.value_objects.time_window import Aggregation
 from api.infrastructure.error_translation import translating_persistence_errors
@@ -36,12 +38,15 @@ from api.infrastructure.persistence.sql.mappers import (
     machine_to_model,
     prediction_from_model,
     prediction_to_model,
+    simulation_run_from_model,
+    simulation_run_to_model,
     telemetry_from_model,
 )
 from api.infrastructure.persistence.sql.models import (
     IncidentModel,
     MachineModel,
     PredictionModel,
+    SimulationRunModel,
     TelemetryModel,
 )
 
@@ -105,6 +110,29 @@ def _aggregator(
         return mapping[aggregation]
     except KeyError:
         raise ValueError(f"Aggregation '{aggregation}' cannot be applied to a bucket.") from None
+
+
+#: Name of the window-function column the two `latest_for_many` queries add. It
+#: exists to be filtered on, never selected.
+_RECENCY_RANK = "recency_rank"
+
+# Both "newest row per machine" queries are written out in full rather than
+# shared through a helper, for the reason `_bucket_expression` above gives
+# about its own two branches: the helper would have to take the model class,
+# and a SQLAlchemy declarative class has no supertype that both exposes
+# `.machine_id` and satisfies `--strict` mypy. The alternative was annotating
+# it `Any`, which the linter rejects outright.
+#
+# `DISTINCT ON (machine_id)` says the same thing in one clause and is
+# PostgreSQL-only. The default test tier runs these adapters against SQLite, so
+# a PostgreSQL-only spelling would leave the contract suite exercising a code
+# path production never runs. `row_number()` is supported by both.
+#
+# The tie-break on `event_id` / `prediction_id` is not decoration. Two rows can
+# share a timestamp -- the simulator emits at a fixed cadence, and a replay can
+# land two on the same instant -- and without it which counts as "newest" would
+# be whichever the plan happened to return first, so `latest_for_many` could
+# disagree with `latest_for` about the same machine.
 
 
 class SqlMachineRepository:
@@ -191,11 +219,45 @@ class SqlTelemetryRepository:
             result = await self._session.execute(
                 select(TelemetryModel)
                 .where(TelemetryModel.machine_id == machine_id.value)
-                .order_by(TelemetryModel.recorded_at.desc())
+                # `event_id` breaks ties, as `latest_records` already does.
+                # Without it, this and `latest_for_many` could name different
+                # records "latest" for the same machine when two share an
+                # instant -- and the fleet row and the machine page would then
+                # disagree about the same reading.
+                .order_by(TelemetryModel.recorded_at.desc(), TelemetryModel.event_id.desc())
                 .limit(1)
             )
             model = result.scalars().first()
             return telemetry_from_model(model) if model is not None else None
+
+    async def latest_for_many(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, TelemetryRecord]:
+        """Return the most recent record for each machine, in one query."""
+        if not machine_ids:
+            return {}
+
+        rank = (
+            func.row_number()
+            .over(
+                partition_by=TelemetryModel.machine_id,
+                order_by=[TelemetryModel.recorded_at.desc(), TelemetryModel.event_id.desc()],
+            )
+            .label(_RECENCY_RANK)
+        )
+        ranked = (
+            select(TelemetryModel, rank)
+            .where(TelemetryModel.machine_id.in_([machine.value for machine in machine_ids]))
+            .subquery()
+        )
+        newest = aliased(TelemetryModel, ranked)
+
+        with translating_persistence_errors():
+            result = await self._session.execute(select(newest).where(ranked.c[_RECENCY_RANK] == 1))
+            records = [telemetry_from_model(model) for model in result.scalars().all()]
+
+        return {record.machine_id: record for record in records}
 
     async def latest_records(self, machine_id: MachineId, limit: int) -> Sequence[TelemetryRecord]:
         """Return the most recent `limit` measurements, oldest first."""
@@ -318,11 +380,45 @@ class SqlPredictionRepository:
             result = await self._session.execute(
                 select(PredictionModel)
                 .where(PredictionModel.machine_id == machine_id.value)
-                .order_by(PredictionModel.predicted_at.desc())
+                # Tie-broken on the identifier for the same reason telemetry is:
+                # so this and `latest_for_many` cannot disagree.
+                .order_by(PredictionModel.predicted_at.desc(), PredictionModel.prediction_id.desc())
                 .limit(1)
             )
             model = result.scalars().first()
             return prediction_from_model(model) if model is not None else None
+
+    async def latest_for_many(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, Prediction]:
+        """Return the most recent prediction for each machine, in one query."""
+        if not machine_ids:
+            return {}
+
+        rank = (
+            func.row_number()
+            .over(
+                partition_by=PredictionModel.machine_id,
+                order_by=[
+                    PredictionModel.predicted_at.desc(),
+                    PredictionModel.prediction_id.desc(),
+                ],
+            )
+            .label(_RECENCY_RANK)
+        )
+        ranked = (
+            select(PredictionModel, rank)
+            .where(PredictionModel.machine_id.in_([machine.value for machine in machine_ids]))
+            .subquery()
+        )
+        newest = aliased(PredictionModel, ranked)
+
+        with translating_persistence_errors():
+            result = await self._session.execute(select(newest).where(ranked.c[_RECENCY_RANK] == 1))
+            predictions = [prediction_from_model(model) for model in result.scalars().all()]
+
+        return {prediction.machine_id: prediction for prediction in predictions}
 
     async def history_for(self, machine_id: MachineId, limit: int) -> Sequence[Prediction]:
         """Return recent predictions for a machine, most recent first."""
@@ -409,3 +505,147 @@ class SqlIncidentRepository:
         with translating_persistence_errors():
             result = await self._session.execute(statement)
             return [incident_from_model(model) for model in result.scalars().all()]
+
+    async def open_counts_by_machine(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, int]:
+        """Return how many incidents are open per machine, in one query."""
+        if not machine_ids:
+            return {}
+
+        statement = (
+            select(IncidentModel.machine_id, func.count())
+            .where(
+                IncidentModel.machine_id.in_([machine.value for machine in machine_ids]),
+                # Read from the domain rather than spelling the two statuses out
+                # here, so this count cannot come to disagree with `is_open`.
+                IncidentModel.status.in_(sorted(status.value for status in OPEN_INCIDENT_STATUSES)),
+            )
+            .group_by(IncidentModel.machine_id)
+        )
+
+        with translating_persistence_errors():
+            result = await self._session.execute(statement)
+            rows = result.all()
+
+        return {MachineId(row[0]): int(row[1]) for row in rows}
+
+
+class SqlSimulationRunRepository:
+    """Simulation runs backed by the operational database."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, run: SimulationRun) -> None:
+        """Record a new run."""
+        with translating_persistence_errors():
+            self._session.add(simulation_run_to_model(run))
+            await self._session.flush()
+
+    async def update(self, run: SimulationRun) -> None:
+        """Persist changes to an existing run.
+
+        Raises:
+            SimulationRunNotFoundError: if no row carries this identifier.
+        """
+        with translating_persistence_errors():
+            model = await self._session.get(SimulationRunModel, run.session_id)
+            if model is None:
+                raise SimulationRunNotFoundError(run.session_id)
+
+            replacement = simulation_run_to_model(run)
+            # Every mutable column, not only the status. A later rule that
+            # revises the pace or records a resume would otherwise fail to
+            # persist with nothing to show for it.
+            model.status = replacement.status
+            model.completed_ticks = replacement.completed_ticks
+            model.last_heartbeat_at = replacement.last_heartbeat_at
+            model.finished_at = replacement.finished_at
+            model.detail = replacement.detail
+            model.resume_count = replacement.resume_count
+            await self._session.flush()
+
+    async def delete(self, session_id: str) -> None:
+        """Remove a run.
+
+        Raises:
+            SimulationRunNotFoundError: if no row carries this identifier.
+        """
+        with translating_persistence_errors():
+            model = await self._session.get(SimulationRunModel, session_id)
+            if model is None:
+                raise SimulationRunNotFoundError(session_id)
+            await self._session.delete(model)
+            await self._session.flush()
+
+    async def get(self, session_id: str) -> SimulationRun | None:
+        """Return one run, or None if unknown."""
+        with translating_persistence_errors():
+            model = await self._session.get(SimulationRunModel, session_id)
+            return simulation_run_from_model(model) if model is not None else None
+
+    async def list_recent(self, limit: int) -> Sequence[SimulationRun]:
+        """Return recent runs across the fleet, newest first."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(SimulationRunModel)
+                .order_by(SimulationRunModel.created_at.desc())
+                .limit(limit)
+            )
+            return [simulation_run_from_model(model) for model in result.scalars().all()]
+
+    async def list_for_machine(
+        self,
+        machine_id: MachineId,
+        limit: int,
+    ) -> Sequence[SimulationRun]:
+        """Return a machine's runs, newest first."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(SimulationRunModel)
+                .where(SimulationRunModel.machine_id == machine_id.value)
+                .order_by(SimulationRunModel.created_at.desc())
+                .limit(limit)
+            )
+            return [simulation_run_from_model(model) for model in result.scalars().all()]
+
+    async def active_for_machine(self, machine_id: MachineId) -> SimulationRun | None:
+        """Return the machine's active run, or None."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(SimulationRunModel)
+                .where(
+                    SimulationRunModel.machine_id == machine_id.value,
+                    SimulationRunModel.status.in_(_active_status_values()),
+                )
+                # At most one can match -- the partial unique index guarantees
+                # it -- so the ordering is here to make the answer deterministic
+                # if that constraint is ever relaxed, not because ties are
+                # expected.
+                .order_by(SimulationRunModel.created_at.desc())
+                .limit(1)
+            )
+            model = result.scalars().first()
+            return simulation_run_from_model(model) if model is not None else None
+
+    async def count_active(self) -> int:
+        """Return how many runs are active fleet-wide."""
+        with translating_persistence_errors():
+            result = await self._session.execute(
+                select(func.count())
+                .select_from(SimulationRunModel)
+                .where(SimulationRunModel.status.in_(_active_status_values()))
+            )
+            return int(result.scalar_one())
+
+
+def _active_status_values() -> list[str]:
+    """Return the active statuses as their stored strings.
+
+    Read from the domain rather than spelled out in a query, so a status added
+    to `ACTIVE_RUN_STATUSES` cannot leave these lookups behind -- which would
+    show up as two runs interleaving readings on one machine.
+    """
+    return sorted(status.value for status in ACTIVE_RUN_STATUSES)

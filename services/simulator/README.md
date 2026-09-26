@@ -14,6 +14,38 @@ uv run python -m simulator realtime --demo
 uv run python -m simulator scenarios
 ```
 
+## Running as a service
+
+```bash
+uv run --extra control --extra mqtt python -m simulator.control
+```
+
+Serves the HTTP surface the API starts and stops runs through. This is how the
+dashboard drives a simulation, and the reason `PRD.md` AC-010 is now satisfied —
+the demonstration no longer needs a simulator on a developer's machine.
+
+It is a **composition point**, a peer of `cli.py` rather than beneath it: both
+wire the same application and infrastructure, and neither is the other's
+dependency. That is enforced by the layers contract rather than by convention,
+which is why the broker settings they share live a rung below both in
+`infrastructure/broker.py`.
+
+`control` is an extra, and for the reason the `mqtt` extra's comment already
+gives: `ml` depends on `simulator` and `services/inference` depends on
+`ml[train]`, so FastAPI as a core dependency would ride into the training and
+inference images to serve a surface neither has.
+
+### A run is stoppable and resumable
+
+`stream_session` takes `should_stop` and `start_index`. Neither is a convenience:
+`PRD.md` §20.5 requires a stop control, and there was no way to end a run other
+than `KeyboardInterrupt` reaching the process; and resumption is what makes a
+container restart survivable mid-demonstration.
+
+Resuming is safe because of the property this package was built around — see
+`MachineSimulator`'s docstring — and because every re-emitted tick carries an
+`event_id` the API already holds.
+
 ## Why the sensors move together
 
 PRD §11 requires a degradation mode to produce a *correlated* signature —
@@ -82,10 +114,13 @@ to go.
 
 ## Not here yet
 
-No MQTT, EMQX, or n8n — the transport is Phase 6, and realtime mode writes to a
-pluggable sink until then. No database writes at all: telemetry reaches
-PostgreSQL through the real pipeline rather than through a shortcut that would
-later need removing. No large-scale dataset generation, which is Phase 3.
+**No database writes at all**, and that is a design choice rather than a gap:
+telemetry reaches PostgreSQL through the real pipeline — MQTT, then the
+orchestrator, then the API — rather than through a shortcut that would later
+need removing. The simulator does not know the API's address for writing; it
+only reports run *state*, which is a different thing on a different route.
+
+No large-scale dataset generation beyond what Phase 3 produced.
 
 The domain is scalar and pure, which is what makes its tests fast and its
 behaviour exact. Phase 3's ~4.3M-row target may want a vectorised implementation

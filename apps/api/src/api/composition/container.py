@@ -21,14 +21,22 @@ from api.application.use_cases import (
     IngestTelemetry,
     ListIncidents,
     ListMachines,
+    ListSimulations,
     RecordPrediction,
     RegisterMachine,
+    ReportSimulationState,
+    ResetSimulation,
+    StartSimulation,
+    StopSimulation,
+    UpdateIncidentStatus,
 )
 from api.domain.entities.prediction import PREDICTION_WINDOW_READINGS
-from api.domain.errors import PredictionUnavailableError
+from api.domain.errors import PredictionUnavailableError, SimulationUnavailableError
 from api.domain.ports.clock import Clock
+from api.domain.ports.events import EventSubscriber
 from api.domain.ports.health import HealthProbe, HealthStatus
 from api.domain.ports.predictor import ModelOutput, Predictor
+from api.domain.ports.simulation import SimulationController, SimulationPlan
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
 from api.domain.services.incident_policy import DefaultIncidentPolicy
 from api.domain.services.risk_level_classifier import RiskLevelClassifier
@@ -39,6 +47,8 @@ from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWor
 from api.infrastructure.persistence.sql.session import create_database_engine
 from api.infrastructure.persistence.sql.unit_of_work import SqlUnitOfWorkFactory
 from api.infrastructure.prediction import HttpPredictor
+from api.infrastructure.realtime import InProcessEventBroadcaster
+from api.infrastructure.simulation import HttpSimulationController
 from api.infrastructure.system.database_health_probe import DatabaseHealthProbe
 from api.infrastructure.system.system_clock import SystemClock
 
@@ -56,6 +66,11 @@ class Container:
     unit_of_work_factory: UnitOfWorkFactory
     clock: Clock
     health_probe: HealthProbe
+    #: The subscriber half of the event bus, for the streaming endpoint. Typed
+    #: as the domain protocol rather than the concrete broadcaster so the
+    #: presentation layer never names an adapter -- which is what the
+    #: "presentation does not import infrastructure" contract requires.
+    event_subscriber: EventSubscriber
 
     list_machines: ListMachines
     get_machine_detail: GetMachineDetail
@@ -65,17 +80,35 @@ class Container:
     record_prediction: RecordPrediction
     ingest_telemetry: IngestTelemetry
     register_machine: RegisterMachine
+    update_incident_status: UpdateIncidentStatus
+    list_simulations: ListSimulations
+    start_simulation: StartSimulation
+    stop_simulation: StopSimulation
+    reset_simulation: ResetSimulation
+    report_simulation_state: ReportSimulationState
+
+    #: Held for its `aclose`, which shuts down the HTTP client the simulation
+    #: controller borrows. Present on both wirings, so the type is not optional
+    #: -- unlike the engine, which exists only when there is a database.
+    simulation_controller: SimulationController
 
     #: Present only when a database engine was created; the in-memory wiring
     #: has nothing to dispose.
     engine: AsyncEngine | None = None
+    #: Present only when a broadcaster was built, so `aclose` has something to
+    #: stop the keepalive timer on.
+    broadcaster: InProcessEventBroadcaster | None = None
 
     async def aclose(self) -> None:
         """Release resources held by the container.
 
         Called from the application's lifespan shutdown so the connection pool
-        is drained rather than abandoned.
+        is drained and the broadcaster's keepalive timer is stopped rather than
+        abandoned.
         """
+        if self.broadcaster is not None:
+            await self.broadcaster.aclose()
+        await self.simulation_controller.aclose()
         if self.engine is not None:
             await self.engine.dispose()
 
@@ -100,6 +133,9 @@ def build_container(settings: Settings) -> Container:
         ),
         engine=engine,
         clock=SystemClock(),
+        simulation_controller=HttpSimulationController(
+            base_url=settings.simulation_service_url, client=httpx.AsyncClient()
+        ),
     )
 
 
@@ -109,6 +145,7 @@ def build_in_memory_container(
     clock: Clock | None = None,
     health_probe: HealthProbe | None = None,
     predictor: Predictor | None = None,
+    simulation_controller: SimulationController | None = None,
 ) -> Container:
     """Wire the application against an in-memory store.
 
@@ -127,6 +164,10 @@ def build_in_memory_container(
         predictor=predictor or UnavailablePredictor(),
         engine=None,
         clock=clock or SystemClock(),
+        # No service to call in the in-memory wiring, so a run cannot be
+        # started. The tests that exercise simulation control supply their own
+        # stub through this seam.
+        simulation_controller=simulation_controller or UnavailableSimulationController(),
     )
 
 
@@ -145,13 +186,21 @@ def _assemble(
     predictor: Predictor,
     engine: AsyncEngine | None,
     clock: Clock,
+    simulation_controller: SimulationController,
 ) -> Container:
     """Build the container from already-chosen adapters."""
+    # Built here rather than passed in: every wiring path wants the same one,
+    # and the publishing use cases below hold the same object the streaming
+    # endpoint subscribes to. Two instances would mean a stream that never
+    # fires.
+    broadcaster = InProcessEventBroadcaster()
+
     return Container(
         settings=settings,
         unit_of_work_factory=unit_of_work_factory,
         clock=clock,
         health_probe=health_probe,
+        event_subscriber=broadcaster,
         list_machines=ListMachines(unit_of_work_factory=unit_of_work_factory),
         get_machine_detail=GetMachineDetail(unit_of_work_factory=unit_of_work_factory),
         get_telemetry_history=GetTelemetryHistory(
@@ -172,14 +221,83 @@ def _assemble(
                 )
             ),
             incident_policy=DefaultIncidentPolicy(),
+            events=broadcaster,
         ),
         ingest_telemetry=IngestTelemetry(
             unit_of_work_factory=unit_of_work_factory,
             window_readings=PREDICTION_WINDOW_READINGS,
+            events=broadcaster,
         ),
         register_machine=RegisterMachine(unit_of_work_factory=unit_of_work_factory, clock=clock),
+        update_incident_status=UpdateIncidentStatus(
+            unit_of_work_factory=unit_of_work_factory,
+            events=broadcaster,
+        ),
+        list_simulations=ListSimulations(
+            unit_of_work_factory=unit_of_work_factory,
+            clock=clock,
+            heartbeat_timeout_seconds=settings.simulation_heartbeat_timeout_seconds,
+        ),
+        start_simulation=StartSimulation(
+            unit_of_work_factory=unit_of_work_factory,
+            controller=simulation_controller,
+            clock=clock,
+            events=broadcaster,
+            max_concurrent_runs=settings.simulation_max_concurrent_runs,
+        ),
+        stop_simulation=StopSimulation(
+            unit_of_work_factory=unit_of_work_factory,
+            controller=simulation_controller,
+            clock=clock,
+            events=broadcaster,
+        ),
+        reset_simulation=ResetSimulation(
+            unit_of_work_factory=unit_of_work_factory,
+            events=broadcaster,
+        ),
+        report_simulation_state=ReportSimulationState(
+            unit_of_work_factory=unit_of_work_factory,
+            clock=clock,
+            events=broadcaster,
+        ),
+        simulation_controller=simulation_controller,
         engine=engine,
+        broadcaster=broadcaster,
     )
+
+
+class UnavailableSimulationController:
+    """A controller that always refuses, for wiring with no simulator service.
+
+    Failing loudly here is the same choice `UnavailablePredictor` makes: a
+    placeholder that reported success would leave the API believing a run was
+    going while nothing produced telemetry, and the dashboard would show a run
+    that never moves with no error anywhere.
+    """
+
+    async def start(self, plan: SimulationPlan) -> None:
+        """Refuse, whatever was asked.
+
+        Raises:
+            SimulationUnavailableError: always.
+        """
+        raise SimulationUnavailableError(
+            f"No simulator service is configured, so '{plan.session_id}' cannot be "
+            "started. Set SIMULATION_SERVICE_URL."
+        )
+
+    async def stop(self, session_id: str) -> None:
+        """Refuse, whatever was asked.
+
+        Raises:
+            SimulationUnavailableError: always.
+        """
+        raise SimulationUnavailableError(
+            f"No simulator service is configured, so '{session_id}' cannot be stopped."
+        )
+
+    async def aclose(self) -> None:
+        """Nothing to release."""
 
 
 class UnavailablePredictor:

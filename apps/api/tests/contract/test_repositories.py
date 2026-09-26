@@ -16,6 +16,7 @@ from tests.contract.repository_contract import (
     IncidentRepositoryContract,
     MachineRepositoryContract,
     PredictionRepositoryContract,
+    SimulationRunRepositoryContract,
     TelemetryRepositoryContract,
 )
 
@@ -68,3 +69,11 @@ class TestInMemoryIncidentRepository(InMemoryAdapterMixin, IncidentRepositoryCon
 
 class TestSqliteIncidentRepository(SqliteAdapterMixin, IncidentRepositoryContract):
     """The SQL incident repository satisfies the contract."""
+
+
+class TestInMemorySimulationRunRepository(InMemoryAdapterMixin, SimulationRunRepositoryContract):
+    """The in-memory simulation run repository satisfies the contract."""
+
+
+class TestSqliteSimulationRunRepository(SqliteAdapterMixin, SimulationRunRepositoryContract):
+    """The SQL simulation run repository satisfies the contract."""

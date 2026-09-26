@@ -48,6 +48,14 @@ services:
       # `http://localhost:8001`, which inside this container is the API itself,
       # and the failure looks like a cold model rather than a config error.
       INFERENCE_SERVICE_URL: http://inference:8001
+      # The service name, for the same reason and with the same trap: the
+      # default is `http://localhost:8002`, which inside this container is the
+      # API itself, and the failure reads as a simulator that never starts
+      # rather than as a wrong address.
+      SIMULATION_SERVICE_URL: http://simulator:8002
+      # One run per machine is enforced by the schema; this is the fleet-wide
+      # ceiling on top of it. A run costs CPU on a box that shares one core.
+      SIMULATION_MAX_CONCURRENT_RUNS: ${SIMULATION_MAX_CONCURRENT_RUNS:-3}
       RISK_WARNING_THRESHOLD: ${RISK_WARNING_THRESHOLD:-0.30}
       RISK_HIGH_THRESHOLD: ${RISK_HIGH_THRESHOLD:-0.60}
       RISK_CRITICAL_THRESHOLD: ${RISK_CRITICAL_THRESHOLD:-0.80}
@@ -121,6 +129,92 @@ services:
       start_period: 180s
 
   # ---------------------------------------------------------------------------
+  # The simulator.
+  # ---------------------------------------------------------------------------
+  # Idle until the API tells it to start. This is what satisfies AC-010: before
+  # this service existed the demonstration required a simulator running on a
+  # developer's laptop, and both runbooks said so.
+  simulator:
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile.simulator
+    restart: unless-stopped
+    environment:
+      # Read by `infrastructure.broker`, which is where the defaults and the
+      # reasoning behind the topic prefix live. Publishing to any prefix other
+      # than the one n8n subscribes to is accepted by the broker and silently
+      # ignored by the orchestrator, so these two must agree.
+      MQTT_HOST: ${MQTT_HOST:-broker.emqx.io}
+      MQTT_PORT: ${MQTT_PORT:-8883}
+      MQTT_TLS: ${MQTT_TLS:-true}
+      MQTT_TOPIC_PREFIX: ${MQTT_TOPIC_PREFIX:-pdm/demo}
+      # Wall-clock seconds between readings. One second replays four hours of
+      # degradation in four minutes, which is what the runbook demonstrates.
+      SIMULATOR_TICK_SECONDS: ${SIMULATOR_TICK_SECONDS:-1.0}
+      # Where to report run state. The service name, not a public hostname --
+      # same reasoning as n8n's `PDM_API_BASE_URL`, and the same two variables
+      # under the same names, set from one secret so they cannot drift.
+      PDM_API_BASE_URL: http://api:8000
+      PDM_INGEST_TOKEN: ${INGEST_API_TOKEN:?INGEST_API_TOKEN is required}
+    # Deliberately no `ports:`. The control surface is unauthenticated, so
+    # publishing it would put an open "start a run" endpoint on the internet.
+    # `tests/unit/infrastructure/test_deployment_shape.py`-style checks on the
+    # compose file fail if one is ever added.
+    #
+    # The limits matter on a one-core box shared with n8n, the API and torch.
+    # They are estimates rather than measurements -- a run is I/O bound and
+    # spends nearly all its wall clock asleep -- and should be tuned from
+    # `docker stats` during a real run. What actually protects the box is the
+    # API's cap on concurrent runs, enforced before this service is asked.
+    cpus: "0.5"
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      # Liveness, not readiness. An idle simulator is a healthy simulator -- that
+      # is the entire point of the service -- so this must not check for a run.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              ok = urllib.request.urlopen(
+                  "http://127.0.0.1:8002/runs", timeout=5
+              ).status == 200
+          except Exception:
+              ok = False
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # One-shot: give n8n's volume to the user that runs n8n.
+  # ---------------------------------------------------------------------------
+  # Docker creates a named volume owned by `root`, and the n8n image drops to
+  # user `node` (uid 1000) before it starts. So on a fresh volume n8n cannot
+  # create `/data/.n8n` and crash-loops with:
+  #
+  #     Error: EACCES: permission denied, mkdir '/data/.n8n'
+  #
+  # This runs the image as root once, hands the directory over, and exits. It is
+  # a service rather than a line in the runbook because a manual `chown` is
+  # exactly the kind of step that gets missed -- and its failure mode is a crash
+  # loop whose cause is four lines into a stack trace.
+  #
+  # Cheap and idempotent: a `chown` on a directory holding one SQLite file, run
+  # on every `up`. It costs nothing worth optimising.
+  n8n-permissions:
+    image: docker.io/n8nio/n8n:1.115.3
+    user: "0:0"
+    entrypoint: ["sh", "-c", "chown -R 1000:1000 /data"]
+    volumes:
+      - n8n-data:/data
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
   # n8n, the orchestrator.
   # ---------------------------------------------------------------------------
   n8n:
@@ -129,6 +223,9 @@ services:
     # review.
     image: docker.io/n8nio/n8n:1.115.3
     restart: unless-stopped
+    depends_on:
+      n8n-permissions:
+        condition: service_completed_successfully
     # No image build, no entrypoint overrides, no Python installed. Every one of
     # those existed in `infra/n8n/modal_app.py` only because a Modal function is
     # Python code that had to shell out to a Node application. A container runs
@@ -174,6 +271,25 @@ services:
       EXECUTIONS_DATA_SAVE_ON_ERROR: all
       EXECUTIONS_DATA_PRUNE: "true"
       EXECUTIONS_DATA_MAX_AGE: "168"
+      # n8n logs a deprecation warning without this: SQLite runs without a pool
+      # of read connections, which serialises every read behind the single
+      # writer. The workflow reads and writes on every telemetry message, so
+      # that is the hot path. Small values are fine on one core -- the point is
+      # having a pool at all.
+      DB_SQLITE_POOL_SIZE: "4"
+      # Security, not performance. n8n's Git node can be pointed at bare
+      # repositories, which is a known attack surface, and this stack uses no
+      # Git node at all. Setting it removes the capability rather than relying
+      # on nobody writing a workflow that uses it.
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: "true"
+      # `/data/.n8n/config` holds the encryption key, and n8n creates it 0644 --
+      # world-readable. The warning n8n prints about this is easy to ignore
+      # precisely because it says it is being ignored for now. This makes it
+      # enforce 0600 instead.
+      #
+      # Safe here because the `n8n-permissions` service has already given the
+      # volume to uid 1000, so n8n owns the file and can chmod it.
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
       GENERIC_TIMEZONE: UTC
       TZ: UTC
     ports:

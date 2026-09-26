@@ -14,6 +14,13 @@ drift apart.
 from api.infrastructure.persistence.sql.models.incident import IncidentModel
 from api.infrastructure.persistence.sql.models.machine import MachineModel
 from api.infrastructure.persistence.sql.models.prediction import PredictionModel
+from api.infrastructure.persistence.sql.models.simulation_run import SimulationRunModel
 from api.infrastructure.persistence.sql.models.telemetry import TelemetryModel
 
-__all__ = ["IncidentModel", "MachineModel", "PredictionModel", "TelemetryModel"]
+__all__ = [
+    "IncidentModel",
+    "MachineModel",
+    "PredictionModel",
+    "SimulationRunModel",
+    "TelemetryModel",
+]

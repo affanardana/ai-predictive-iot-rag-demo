@@ -15,7 +15,7 @@ from datetime import datetime
 from api.domain.timestamps import ensure_aware
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.sensor_reading import SensorReading
-from api.domain.value_objects.time_window import SeriesResolution, TimeWindow
+from api.domain.value_objects.time_window import ResolvedWindow, SeriesResolution, TimeWindow
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,11 +51,19 @@ class TelemetryPoint:
 
 @dataclass(frozen=True, slots=True)
 class TelemetrySeries:
-    """A window of telemetry, reduced to a stated resolution."""
+    """A window of telemetry, reduced to a stated resolution.
+
+    `interval` is the part of the answer a client cannot infer for itself. The
+    window it asked for names a duration; these are the instants that duration
+    was applied to, which is what a consumer needs to plot the series against
+    the right stretch of time -- and what tells it that the series does not end
+    at the wall clock.
+    """
 
     machine_id: MachineId
     window: TimeWindow
     resolution: SeriesResolution
+    interval: ResolvedWindow
     points: Sequence[TelemetryPoint]
 
     def __len__(self) -> int:

@@ -13,13 +13,14 @@ followed by a SELECT.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
 from api.domain.entities.incident import Incident
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
+from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.value_objects.incident_status import IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
@@ -58,6 +59,29 @@ class TelemetryRepository(Protocol):
 
     async def latest_for(self, machine_id: MachineId) -> TelemetryRecord | None:
         """Return the most recent record for a machine."""
+        ...
+
+    async def latest_for_many(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, TelemetryRecord]:
+        """Return the most recent record for each machine, in one query.
+
+        The bulk counterpart of `latest_for`, and the reason it exists: the
+        fleet view needs every machine's newest reading at once, and asking per
+        machine issues one query each. Three of those reads per machine is what
+        made `GET /api/v1/machines` O(3n).
+
+        **A machine with no telemetry is absent from the mapping rather than
+        mapped to None.** The distinction is deliberate: `None` would suggest
+        the store knows the machine has no reading, and the caller cannot then
+        tell that apart from a machine it forgot to ask about. `dict.get`
+        collapses both readings to `None` at the call site anyway.
+
+        Ties on `recorded_at` are broken by `event_id`, matching
+        `latest_records`, so which of two same-instant rows is "latest" does not
+        depend on the query plan.
+        """
         ...
 
     async def latest_records(self, machine_id: MachineId, limit: int) -> Sequence[TelemetryRecord]:
@@ -130,8 +154,89 @@ class PredictionRepository(Protocol):
         """Return the most recent prediction for a machine."""
         ...
 
+    async def latest_for_many(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, Prediction]:
+        """Return the most recent prediction for each machine, in one query.
+
+        The bulk counterpart of `latest_for`; see `TelemetryRepository.
+        latest_for_many` for why a machine with no predictions is absent from
+        the mapping rather than mapped to None.
+        """
+        ...
+
     async def history_for(self, machine_id: MachineId, limit: int) -> Sequence[Prediction]:
         """Return recent predictions for a machine, most recent first."""
+        ...
+
+
+class SimulationRunRepository(Protocol):
+    """Storage for controlled simulation runs.
+
+    Unlike the other repositories, this one exists to answer questions the API
+    asks about *itself*: whether a machine is already running, and how many runs
+    are going at once. Those are the two limits that keep an unguarded start
+    endpoint from costing more CPU than a one-core box has.
+    """
+
+    async def add(self, run: SimulationRun) -> None:
+        """Record a new run."""
+        ...
+
+    async def update(self, run: SimulationRun) -> None:
+        """Persist changes to an existing run.
+
+        Raises:
+            SimulationRunNotFoundError: if no row carries this identifier. An
+                upsert would be wrong here for the reason the incident
+                repository gives: it would let a caller believe it had updated a
+                run that was never recorded.
+        """
+        ...
+
+    async def delete(self, session_id: str) -> None:
+        """Remove a run.
+
+        Raises:
+            SimulationRunNotFoundError: if no row carries this identifier.
+        """
+        ...
+
+    async def get(self, session_id: str) -> SimulationRun | None:
+        """Return one run, or None if unknown."""
+        ...
+
+    async def list_recent(self, limit: int) -> Sequence[SimulationRun]:
+        """Return recent runs across the fleet, newest first."""
+        ...
+
+    async def list_for_machine(
+        self,
+        machine_id: MachineId,
+        limit: int,
+    ) -> Sequence[SimulationRun]:
+        """Return a machine's runs, newest first."""
+        ...
+
+    async def active_for_machine(self, machine_id: MachineId) -> SimulationRun | None:
+        """Return the machine's active run, or None.
+
+        At most one can exist: the schema enforces it with a partial unique
+        index over `ACTIVE_RUN_STATUSES`, because two runs interleaving readings
+        for one machine would produce a risk band describing neither scenario and
+        would leave no trace of why.
+        """
+        ...
+
+    async def count_active(self) -> int:
+        """Return how many runs are active fleet-wide.
+
+        A count rather than a fetched list, for the reason `TelemetryRepository.
+        count_for` gives: it is a question the database already knows the answer
+        to, and fetching rows to measure their length transfers data to compute
+        a number.
+        """
         ...
 
 
@@ -165,4 +270,22 @@ class IncidentRepository(Protocol):
         limit: int,
     ) -> Sequence[Incident]:
         """Return incidents, optionally filtered, most recent first."""
+        ...
+
+    async def open_counts_by_machine(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, int]:
+        """Return how many incidents are open per machine, in one query.
+
+        Counts `OPEN_INCIDENT_STATUSES` -- open *and* acknowledged, which is
+        `Incident.is_open`. Reading the rule from the domain rather than
+        spelling the two values out in a `WHERE` clause is what keeps this
+        count and the incident list from disagreeing.
+
+        Replaces a per-machine `list_for_machine` call whose only purpose was
+        to measure the length of the result, capped at 500 rows and fetching
+        them all to count them. A machine with no open incidents is absent
+        from the mapping; `dict.get(machine_id, 0)` is the intended reading.
+        """
         ...

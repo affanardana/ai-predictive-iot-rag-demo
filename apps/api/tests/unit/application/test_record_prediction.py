@@ -24,7 +24,7 @@ from api.domain.value_objects.risk_thresholds import RiskThresholds
 from api.infrastructure.persistence.memory.store import InMemoryStore
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
 from tests.support.factories import DEFAULT_NOW, make_machine, make_reading, make_telemetry
-from tests.support.fakes import FixedClock
+from tests.support.fakes import FixedClock, RecordingEventPublisher
 
 
 class StubPredictor:
@@ -63,16 +63,18 @@ async def seed(
 def a_use_case(
     factory: InMemoryUnitOfWorkFactory,
     probability: float,
-) -> tuple[RecordPrediction, StubPredictor]:
+) -> tuple[RecordPrediction, StubPredictor, RecordingEventPublisher]:
     predictor = StubPredictor(probability)
+    events = RecordingEventPublisher()
     use_case = RecordPrediction(
         unit_of_work_factory=factory,
         predictor=predictor,
         clock=FixedClock(),
         classifier=RiskLevelClassifier(thresholds=RiskThresholds()),
         incident_policy=DefaultIncidentPolicy(),
+        events=events,
     )
-    return use_case, predictor
+    return use_case, predictor, events
 
 
 @pytest.fixture
@@ -84,14 +86,14 @@ async def test_a_high_risk_prediction_raises_an_incident(
     factory: InMemoryUnitOfWorkFactory,
 ) -> None:
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=0.75)
+    use_case, _, _ = a_use_case(factory, probability=0.75)
 
-    prediction = await use_case.execute(MachineId("M003"))
+    result = await use_case.execute(MachineId("M003"))
 
     async with factory() as uow:
         incidents = await uow.incidents.list_for_machine(MachineId("M003"), limit=10)
 
-    assert prediction.risk_level is RiskLevel.HIGH
+    assert result.prediction.risk_level is RiskLevel.HIGH
     assert len(incidents) == 1
     assert incidents[0].severity is IncidentSeverity.HIGH
     assert incidents[0].probability.value == pytest.approx(0.75)
@@ -106,14 +108,14 @@ async def test_the_incident_is_linked_to_the_prediction_that_raised_it(
     the link is a reference rather than an ownership.
     """
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=0.95)
+    use_case, _, _ = a_use_case(factory, probability=0.95)
 
-    prediction = await use_case.execute(MachineId("M003"))
+    result = await use_case.execute(MachineId("M003"))
 
     async with factory() as uow:
         incidents = await uow.incidents.list_for_machine(MachineId("M003"), limit=10)
 
-    assert incidents[0].prediction_id == prediction.prediction_id
+    assert incidents[0].prediction_id == result.prediction.prediction_id
 
 
 async def test_the_incident_is_unclassified(factory: InMemoryUnitOfWorkFactory) -> None:
@@ -124,7 +126,7 @@ async def test_the_incident_is_unclassified(factory: InMemoryUnitOfWorkFactory) 
     test that failed here would mean someone had guessed.
     """
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=0.95)
+    use_case, _, _ = a_use_case(factory, probability=0.95)
 
     await use_case.execute(MachineId("M003"))
 
@@ -144,7 +146,7 @@ async def test_a_band_below_high_raises_no_incident(
     would train operators to ignore the list.
     """
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=probability)
+    use_case, _, _ = a_use_case(factory, probability=probability)
 
     await use_case.execute(MachineId("M003"))
 
@@ -159,7 +161,7 @@ async def test_every_band_at_or_above_high_raises_one(
     factory: InMemoryUnitOfWorkFactory, probability: float
 ) -> None:
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=probability)
+    use_case, _, _ = a_use_case(factory, probability=probability)
 
     await use_case.execute(MachineId("M003"))
 
@@ -180,7 +182,7 @@ async def test_scoring_again_while_an_incident_is_open_raises_nothing(
     anything.
     """
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=0.95)
+    use_case, _, _ = a_use_case(factory, probability=0.95)
 
     first = await use_case.execute(MachineId("M003"))
     second = await use_case.execute(MachineId("M003"))
@@ -189,7 +191,8 @@ async def test_scoring_again_while_an_incident_is_open_raises_nothing(
     async with factory() as uow:
         incidents = await uow.incidents.list_for_machine(MachineId("M003"), limit=10)
 
-    assert first.prediction_id != second.prediction_id != third.prediction_id
+    ids = [result.prediction.prediction_id for result in (first, second, third)]
+    assert len(set(ids)) == 3, "each scoring is its own prediction"
     assert len(incidents) == 1, "three predictions, one incident"
 
 
@@ -202,7 +205,7 @@ async def test_an_acknowledged_incident_still_suppresses(
     would generate a fresh incident for each one they touched.
     """
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=0.95)
+    use_case, _, _ = a_use_case(factory, probability=0.95)
     await use_case.execute(MachineId("M003"))
 
     async with factory() as uow:
@@ -229,7 +232,7 @@ async def test_a_closed_incident_does_not_suppress(
     thing that happened, and the record should say so.
     """
     await seed(factory)
-    use_case, _ = a_use_case(factory, probability=0.95)
+    use_case, _, _ = a_use_case(factory, probability=0.95)
     await use_case.execute(MachineId("M003"))
 
     async with factory() as uow:
@@ -253,7 +256,7 @@ async def test_suppression_is_per_machine(factory: InMemoryUnitOfWorkFactory) ->
     """One machine's open incident must not silence another's."""
     await seed(factory, machine_id="M003")
     await seed(factory, machine_id="M004")
-    use_case, _ = a_use_case(factory, probability=0.95)
+    use_case, _, _ = a_use_case(factory, probability=0.95)
 
     await use_case.execute(MachineId("M003"))
     await use_case.execute(MachineId("M004"))
@@ -268,7 +271,7 @@ async def test_a_short_history_is_refused_with_both_counts(
     factory: InMemoryUnitOfWorkFactory,
 ) -> None:
     await seed(factory, count=PREDICTION_WINDOW_READINGS - 1)
-    use_case, predictor = a_use_case(factory, probability=0.95)
+    use_case, predictor, _ = a_use_case(factory, probability=0.95)
 
     with pytest.raises(InsufficientTelemetryHistoryError) as raised:
         await use_case.execute(MachineId("M003"))
@@ -281,7 +284,7 @@ async def test_a_short_history_is_refused_with_both_counts(
 async def test_an_unknown_machine_is_refused_before_inference(
     factory: InMemoryUnitOfWorkFactory,
 ) -> None:
-    use_case, predictor = a_use_case(factory, probability=0.95)
+    use_case, predictor, _ = a_use_case(factory, probability=0.95)
 
     with pytest.raises(MachineNotFoundError):
         await use_case.execute(MachineId("M999"))

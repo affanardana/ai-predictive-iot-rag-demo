@@ -1,0 +1,51 @@
+# The simulator, as a container.
+#
+# This is the change that satisfies `PRD.md` AC-010 -- "the complete
+# demonstration can run without a locally running simulator" -- which had been
+# unmet since Phase 6, when the simulator ran from a developer's laptop and both
+# runbooks told you to do it.
+#
+# **No `pyarrow`.** The Parquet sinks are the only thing that needs it, and
+# `simulator/infrastructure/sinks/__init__.py` imports them on first access
+# rather than eagerly so that importing the MQTT sink does not pull in 40 MB of
+# columnar library this service never uses. `test_lazy_sinks.py` asserts that,
+# in a subprocess, because a regression would surface here as an image that
+# either grew or refused to boot.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src
+
+WORKDIR /app
+
+# Packages by name, never `uv sync --all-packages` -- the same rule the API and
+# inference images follow, for the same reason: the workspace resolves torch
+# from PyPI, which on Linux is the CUDA build, and this service simulates a
+# motor rather than training a model.
+RUN pip install --no-cache-dir \
+        "fastapi>=0.115" \
+        "uvicorn[standard]>=0.32" \
+        "paho-mqtt>=2.1"
+
+# The package only. No `pyproject.toml`, no build backend, no installation --
+# `PYTHONPATH` above is the whole of it, matching how the API image copies
+# `apps/api/src/api`.
+COPY services/simulator/src/simulator /app/src/simulator
+
+# Not root. This container holds no state and writes no files; the only thing it
+# needs is an outbound socket to the broker.
+RUN useradd --create-home --uid 10002 pdm
+USER pdm
+
+# Reached from the API over the Compose bridge. `compose.yaml` publishes no host
+# port for this service and must not: the control surface has no authentication,
+# so a published port would be an open "start a run" endpoint on the internet.
+EXPOSE 8002
+
+# No `--workers`, and here it matters more than it does for the API. The run
+# registry is in-process state, so a second worker would answer `GET /runs` with
+# an empty list and cheerfully accept a second run for a machine already running
+# in the first -- two scenarios interleaving readings on one machine, with
+# nothing logged to say why.
+CMD ["python", "-m", "simulator.control"]

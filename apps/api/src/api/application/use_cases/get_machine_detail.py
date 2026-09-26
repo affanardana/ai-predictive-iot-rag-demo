@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from api.application.read_models import MachineDetail
-from api.application.summaries import summarise_machine
+from api.application.summaries import summarise_machines
 from api.domain.errors import MachineNotFoundError
 from api.domain.ports.unit_of_work import UnitOfWorkFactory
 from api.domain.value_objects.machine_id import MachineId
@@ -33,6 +33,9 @@ class GetMachineDetail:
             if machine is None:
                 raise MachineNotFoundError(str(machine_id))
 
-            summary = await summarise_machine(uow, machine)
+            # One machine, but through the same bulk path the fleet list uses,
+            # so the detail page cannot describe a machine differently from the
+            # row that linked to it.
+            (summary,) = await summarise_machines(uow, [machine])
             incidents = await uow.incidents.list_for_machine(machine_id, limit=self.incident_limit)
             return MachineDetail(summary=summary, recent_incidents=incidents)

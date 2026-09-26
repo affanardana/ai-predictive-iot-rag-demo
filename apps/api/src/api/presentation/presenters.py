@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from api.application.read_models import MachineDetail, MachineSummary
+from api.application.read_models import MachineDetail, MachineSummary, SimulationRunView
 from api.domain.entities.incident import Incident
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
@@ -23,7 +23,9 @@ from api.presentation.schemas.machine import (
     MachineSummarySchema,
 )
 from api.presentation.schemas.prediction import PredictionSchema
+from api.presentation.schemas.simulation import SimulationRunSchema
 from api.presentation.schemas.telemetry import (
+    ResolvedWindowSchema,
     SensorReadingSchema,
     SeriesResolutionSchema,
     TelemetryPointSchema,
@@ -129,6 +131,10 @@ def to_telemetry_series(series: TelemetrySeries) -> TelemetrySeriesSchema:
             bucket_seconds=int(bucket.total_seconds()) if bucket is not None else None,
             aggregation=series.resolution.aggregation,
         ),
+        interval=ResolvedWindowSchema(
+            start=series.interval.start,
+            end=series.interval.end,
+        ),
         points=[
             TelemetryPointSchema(
                 timestamp=point.timestamp,
@@ -143,3 +149,35 @@ def to_telemetry_series(series: TelemetrySeries) -> TelemetrySeriesSchema:
 def to_incident_list(incidents: Sequence[Incident]) -> list[IncidentSchema]:
     """Translate a sequence of incidents."""
     return [to_incident(incident) for incident in incidents]
+
+
+def to_simulation_run(view: SimulationRunView) -> SimulationRunSchema:
+    """Translate a run and the facts derived about it.
+
+    Durations go out as whole seconds rather than as a formatted string, so a
+    client renders them in whatever form suits it -- and so the tick count it
+    arrives at matches the one the API counted.
+    """
+    run = view.run
+    return SimulationRunSchema(
+        session_id=run.session_id,
+        machine_id=run.machine_id.value,
+        scenario=run.scenario,
+        seed=run.seed,
+        status=run.status,
+        duration_seconds=int(run.duration.total_seconds()),
+        sample_interval_seconds=int(run.sample_interval.total_seconds()),
+        tick_count=run.tick_count,
+        completed_ticks=run.completed_ticks,
+        started_at=run.started_at,
+        created_at=run.created_at,
+        finished_at=run.finished_at,
+        detail=run.detail,
+        is_active=view.is_active,
+        is_stale=view.is_stale,
+    )
+
+
+def to_simulation_run_list(views: Sequence[SimulationRunView]) -> list[SimulationRunSchema]:
+    """Translate a sequence of runs."""
+    return [to_simulation_run(view) for view in views]

@@ -6,6 +6,7 @@ from api.infrastructure.persistence.memory.repositories import (
     InMemoryIncidentRepository,
     InMemoryMachineRepository,
     InMemoryPredictionRepository,
+    InMemorySimulationRunRepository,
     InMemoryTelemetryRepository,
 )
 from api.infrastructure.persistence.memory.store import InMemoryStore
@@ -29,6 +30,7 @@ class InMemoryUnitOfWork:
         self.telemetry = InMemoryTelemetryRepository(store)
         self.predictions = InMemoryPredictionRepository(store)
         self.incidents = InMemoryIncidentRepository(store)
+        self.simulations = InMemorySimulationRunRepository(store)
 
     async def __aenter__(self) -> InMemoryUnitOfWork:
         """Take a snapshot to roll back to."""

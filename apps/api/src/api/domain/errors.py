@@ -55,6 +55,74 @@ class PredictionUnavailableError(DomainError):
     """
 
 
+class SimulationRunNotFoundError(DomainError):
+    """No run carries this identifier."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"Simulation run '{session_id}' was not found.")
+
+
+class SimulationUnavailableError(DomainError):
+    """The simulator service could not be reached or refused the request.
+
+    A dependency outage, not a bad request: the run was well formed, the machine
+    exists, and the service that would execute it did not answer. Reported
+    distinctly so a caller can retry rather than hunt for a mistake in their
+    configuration -- the same reasoning as `PredictionUnavailableError`.
+    """
+
+
+class SimulationAlreadyRunningError(DomainError):
+    """The machine already has an active run.
+
+    Two runs on one machine would interleave readings from two scenarios, and the
+    risk band they produced would describe neither. A conflict rather than a
+    validation error: the request was fine, the machine's current state is what
+    refuses it.
+    """
+
+    def __init__(self, machine_id: str, session_id: str) -> None:
+        self.machine_id = machine_id
+        self.session_id = session_id
+        super().__init__(f"{machine_id} already has an active run ('{session_id}'). Stop it first.")
+
+
+class TooManySimulationsError(DomainError):
+    """The concurrent-run ceiling has been reached.
+
+    Enforced because runs cost CPU on a box that shares one core between the
+    API, the orchestrator and the model service, and because the endpoint that
+    starts them is reachable by anyone who finds the hostname.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        super().__init__(f"At most {limit} simulations may run at once, and that many are active.")
+
+
+class SimulationRunActiveError(DomainError):
+    """The run is still going, and the caller asked for something terminal."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"Simulation run '{session_id}' is still active.")
+
+
+class InvalidRunTransitionError(DomainError):
+    """A run's lifecycle does not permit the requested move.
+
+    A conflict rather than a validation error: the request was well formed, the
+    run's current state is what refuses it -- the same distinction
+    `InvalidIncidentTransitionError` draws.
+    """
+
+    def __init__(self, current: str, requested: str) -> None:
+        self.current = current
+        self.requested = requested
+        super().__init__(f"A run cannot move from {current} to {requested}.")
+
+
 class InsufficientTelemetryHistoryError(DomainError):
     """There are too few stored readings to build a prediction window.
 

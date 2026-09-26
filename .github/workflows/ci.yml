@@ -41,6 +41,79 @@ jobs:
       - name: Check architecture contracts
         run: uv run lint-imports
 
+  # The frontend compiles against types generated from the API's OpenAPI
+  # document, which is itself generated from the API's code. Without this job
+  # the chain has no gate: a schema change would land, the generated types
+  # would silently keep describing the old shape, and the mismatch would
+  # surface as an empty table in a browser rather than as a failing build.
+  web:
+    name: Web (types, tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        working-directory: .
+        run: uv sync --locked --all-packages
+
+      # Exported from the application object, so this needs no server and no
+      # database -- `Settings` is given a URL that is never dialled and the
+      # engine it configures opens no connection until a query runs.
+      #
+      # `--out` rather than a shell redirect: `>` produces UTF-16 on Windows
+      # PowerShell, which every JSON parser rejects. The script writes the bytes
+      # itself so the shell cannot decide the encoding.
+      - name: Export the OpenAPI document
+        working-directory: .
+        run: uv run python apps/api/scripts/export_openapi.py --out apps/web/openapi.json
+
+      - name: Regenerate the API types
+        run: npm run gen:api
+
+      # Fails when the API's contract and the committed types have drifted
+      # apart. This is what makes `schema.d.ts` checked in rather than built
+      # on the fly: the diff is the error message.
+      #
+      # `--intent-to-add` first, because plain `git diff` ignores untracked
+      # files -- so a deleted `schema.d.ts` would be regenerated here, compared
+      # against nothing, and pass. The step would still be green while the
+      # file it guards was missing from the repository.
+      - name: Check for schema drift
+        run: |
+          git add --intent-to-add src/api/schema.d.ts
+          git diff --exit-code -- src/api/schema.d.ts
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      # Last, because a Vite or Tailwind misconfiguration shows up here and
+      # nowhere else -- including the Tailwind v4 trap where a v3-style
+      # `@tailwind` preamble builds successfully and emits no styles.
+      - name: Build
+        run: npm run build
+
   test:
     name: Tests (offline)
     runs-on: ubuntu-latest

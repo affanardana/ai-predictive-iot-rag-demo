@@ -8,7 +8,11 @@ from uuid import uuid4
 
 from api.domain.timestamps import ensure_aware
 from api.domain.value_objects.failure_probability import FailureProbability
-from api.domain.value_objects.incident_status import IncidentStatus, ensure_transition_allowed
+from api.domain.value_objects.incident_status import (
+    OPEN_INCIDENT_STATUSES,
+    IncidentStatus,
+    ensure_transition_allowed,
+)
 from api.domain.value_objects.incident_type import IncidentType
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
@@ -42,7 +46,9 @@ class Incident:
     @property
     def is_open(self) -> bool:
         """Whether the incident still requires attention."""
-        return self.status in (IncidentStatus.OPEN, IncidentStatus.ACKNOWLEDGED)
+        # The set lives in `incident_status` because the fleet summary counts it
+        # in SQL, and one rule with two implementations is one rule too many.
+        return self.status in OPEN_INCIDENT_STATUSES
 
     def acknowledge(self) -> None:
         """Mark the incident as seen by an operator."""
@@ -55,6 +61,21 @@ class Incident:
     def dismiss(self) -> None:
         """Close the incident without action, e.g. a false positive."""
         self._transition_to(IncidentStatus.DISMISSED)
+
+    def transition_to(self, requested: IncidentStatus) -> None:
+        """Move to `requested`, for a caller that already knows the target.
+
+        The three named methods above read better at a call site that knows
+        what it means to do. This one serves a caller that is handed a status
+        -- an HTTP request naming one -- and needs the same guard without a
+        dispatch table restating the lifecycle somewhere outside the domain.
+
+        Note that the transition table permits no self-transition, so passing
+        the status an incident already has raises. That is deliberate:
+        re-acknowledging an acknowledged incident means someone else acted on
+        it in the meantime, and reporting success would hide that.
+        """
+        self._transition_to(requested)
 
     def _transition_to(self, requested: IncidentStatus) -> None:
         """Apply a status change, raising if the transition is not permitted."""

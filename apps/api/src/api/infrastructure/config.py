@@ -55,6 +55,31 @@ class Settings(BaseSettings):
     #: that torch stays out of this process and out of its container image.
     inference_service_url: str = "http://localhost:8001"
 
+    #: Where the simulator service lives. Over HTTP for the same reason as
+    #: inference: a simulation run blocks a thread for its whole wall-clock
+    #: duration, which is not something to do inside a request-serving process.
+    #:
+    #: The default is `localhost` for a developer running both, and the same
+    #: trap inference has applies verbatim: inside a container, `localhost` is
+    #: the API itself, and the failure looks like a cold service rather than a
+    #: misconfiguration. `compose.yaml` sets the service name.
+    simulation_service_url: str = "http://localhost:8002"
+
+    #: How many runs may be active at once across the fleet.
+    #:
+    #: A ceiling rather than a preference. `POST /api/v1/simulations` is
+    #: reachable by anyone who finds the hostname, and each run costs CPU on a
+    #: box that already shares one core between the API, the orchestrator and
+    #: the model service. Three is the point at which a fleet-wide demonstration
+    #: still works and the box does not visibly suffer.
+    simulation_max_concurrent_runs: int = 3
+
+    #: How long a run may go without reporting before it is treated as gone.
+    #: The simulator reports every few seconds, so this is several missed
+    #: heartbeats -- long enough that a busy box does not mark live runs dead,
+    #: short enough that a container which died is noticed.
+    simulation_heartbeat_timeout_seconds: float = 45.0
+
     #: Shared secret the orchestrator presents on the write endpoints. Required
     #: outside `local`; see `_validate_consistency`. This is deliberately not a
     #: user authentication scheme -- Phase 11 owns that -- it is one machine

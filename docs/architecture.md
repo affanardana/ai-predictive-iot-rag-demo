@@ -168,29 +168,98 @@ where behaviour changes are the ones worth asserting.
 **A schema change**: edit the model, generate a migration, and let
 `alembic check` confirm they agree.
 
+## Simulation control
+
+A run is started from the dashboard and executed by the simulator service. The
+two halves talk in **both directions**, and both are needed:
+
+```text
+Dashboard ──POST /api/v1/simulations──▶ API ──POST /runs──▶ simulator
+                                        │                     │
+                                        │                    MQTT
+                                        │                     ▼
+                                        │              broker.emqx.io
+                                        │                     │
+                                        │                  n8n
+                                        │                     │
+                                        ◀──PATCH /runs/{id}───┘  telemetry
+                                        │
+                                   Postgres
+```
+
+**The API pushes; the simulator reports back.** The reverse — the simulator
+polling the API for work — was rejected on one point: *stop*. A polling
+simulator learns to stop on its next poll, which means either a request per tick
+or a run that keeps publishing after the operator pressed the button.
+
+**The report direction is forced by Phase 7's design.** The realtime broadcaster
+is in-process, so nothing outside the API can put an event on the dashboard's
+stream. A run that finished in another container therefore has to *tell* the
+API, which republishes it as `SIMULATION_STATE_CHANGED`. Progress reports are
+accepted without publishing: the service reports every few seconds, and
+announcing each one would make every open dashboard refetch on that cadence.
+
+**The API owns run state.** It records the plan — scenario, seed, duration,
+pace — rather than a reference to it, so a run could be re-issued without asking
+anyone. That is possible because `MachineSimulator` is a pure function of the
+tick index: a resumed run produces exactly the tail of the original series, and
+every tick it re-emits carries an `event_id` the ingest endpoint already holds.
+The reconciliation sweep that would use this is not built; a run whose container
+vanished is reported stopped, which is honest and needs no background task.
+
+**One run per machine, several at once.** Enforced by a partial unique index
+over `ACTIVE_RUN_STATUSES`, mirrored by hand in the in-memory adapter so the
+contract suite holds both to it. Two runs on one machine would interleave two
+scenarios' readings on the same charts, and the risk band they produced would
+describe neither.
+
 ## Known limitations
 
-- **`GET /api/v1/machines` issues O(3n) queries** for `n` machines, because each
-  summary reads its latest reading, prediction, and incidents separately. Fine at
-  current scale, and the coding standards discourage premature optimisation, but
-  it should be replaced by a bulk read port before the Phase 7 dashboard polls it.
+- **The event stream is fanned out in memory, so the API must stay a single
+  process.** `InProcessEventBroadcaster` delivers each change to the subscribers
+  attached to the process that published it. A second uvicorn worker would not
+  fail — it would deliver each event to an arbitrary subset of connected
+  browsers, so one dashboard tab would update and another would sit still.
+  `infra/compose/Dockerfile.api` starts uvicorn with no `--workers`, and
+  `tests/unit/infrastructure/test_deployment_shape.py` fails if one appears.
+  Going multi-process means PostgreSQL `LISTEN`/`NOTIFY` or Redis, which is
+  deliberate work rather than a flag. The client's polling floor means a dropped
+  event costs freshness, never correctness.
+- **`PATCH /api/v1/incidents/{id}` is the only unguarded write.** Reads have
+  been open since Phase 6 by choice; this one follows from the same constraint,
+  because the dashboard calls it from a browser and shipping the shared secret
+  to every client is what unguarded reads exist to avoid. Anyone who finds the
+  hostname can resolve or dismiss an incident. Bounded — it cannot inject
+  telemetry, register a machine, or alter a prediction — and Phase 11 owns
+  operator authentication. See ADR 0007.
+- **CORS allows every origin.** Same reasoning: reads are open, writes are
+  guarded by a header token rather than a cookie, and Vercel gives every preview
+  deployment its own generated origin, so an allowlist would break previews on
+  each push with an opaque browser error. `allow_credentials=False` keeps the
+  wildcard from ever combining with ambient auth. Phase 11 tightens it.
+- **`POST /api/v1/simulations` is unguarded, and costs more than the other two.**
+  The incident route can misrepresent state; this one consumes CPU on a
+  one-core box. Four bounds stand in for the token a browser cannot hold: one
+  active run per machine, a fleet-wide ceiling, a 60-minute floor on duration,
+  and the container's own limits. See ADR 0008.
+- **`Reset` cannot remove a run's telemetry**, so a second run appends to a
+  machine's charts. Discarding stored readings is a destructive write, which
+  would need the ingest token, which a browser cannot present — so a destructive
+  reset would be unreachable from the button meant to offer it.
 - **`IncidentType` is always `UNCLASSIFIED`.** The model is a binary failure
   classifier and cannot say what is failing. Three resolutions are documented in
-  `domain/value_objects/incident_type.py`; the stub is now reached by real
-  incidents, so the gap is visible in the product rather than only in the type.
+  `domain/value_objects/incident_type.py`; the stub is reached by real incidents
+  and is now visible on the dashboard's incident table, so the gap is in the
+  product rather than only in the type.
 - **Incidents are suppressed while one is open.** `RecordPrediction` raises an
   incident only when the machine has none open, which is a rule the PRD does not
   state — §10 says only "create an incident when configured predictive-risk
   conditions are satisfied". Without it a machine that crosses HIGH stays there
   and files one incident per reading. The residual race, two concurrent scorings
-  both finding none, is accepted rather than locked against.
-- **The simulator's clock runs ahead of the wall clock.** `recorded_at` advances
-  at `sample_interval × index` while the paced loop sleeps `tick_seconds` per
-  tick, so a demo at 300× produces timestamps an hour ahead of now within twelve
-  seconds. Anything bounded by `clock.now()` — every `GET
-  /machines/{id}/telemetry` — returns nothing during such a run. Phase 6 works
-  around it with count-based reads and a `--started-at` in the past; the fix is
-  a "relative to newest record" query mode, and it belongs to Phase 7.
-- **`list_for_machine` is used to count open incidents** in the fleet summary,
-  capped at 500 rows. A dedicated count query is the right fix when incident
-  volume grows.
+  both finding none, is accepted rather than locked against. Resolving or
+  dismissing an incident is what lets the next one through, which is why the
+  status route above is not merely a convenience.
+- **The incident and prediction lists are capped server-side and cannot be
+  paged.** Incidents return at most 100, predictions at most 200, and neither
+  accepts a `limit` or `offset`. Fine at the current volume; pagination is what
+  the first fleet large enough to need it will require.

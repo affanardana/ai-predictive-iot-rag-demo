@@ -1,9 +1,9 @@
 """Unit of work port.
 
-Gives a use case one transactional boundary over all four repositories. Use
-cases depend on this rather than on individual repositories so that a write
-spanning several aggregates -- persisting a prediction and the incident it
-raises -- either commits together or not at all.
+Gives a use case one transactional boundary over every repository. Use cases
+depend on this rather than on individual repositories so that a write spanning
+several aggregates -- persisting a prediction and the incident it raises --
+either commits together or not at all.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from api.domain.ports.repositories import (
     IncidentRepository,
     MachineRepository,
     PredictionRepository,
+    SimulationRunRepository,
     TelemetryRepository,
 )
 
@@ -47,6 +48,11 @@ class UnitOfWork(Protocol):
     @property
     def incidents(self) -> IncidentRepository:
         """Storage for incidents."""
+        ...
+
+    @property
+    def simulations(self) -> SimulationRunRepository:
+        """Storage for simulation runs."""
         ...
 
     async def __aenter__(self) -> UnitOfWork:

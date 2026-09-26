@@ -15,12 +15,15 @@ from api.domain.entities.prediction import (
     DEFAULT_PREDICTION_HORIZON,
     Prediction,
 )
+from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.value_objects.failure_probability import FailureProbability
 from api.domain.value_objects.incident_type import IncidentType
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity, RiskLevel
+from api.domain.value_objects.run_status import RunStatus
 from api.domain.value_objects.sensor_reading import SensorReading
+from api.domain.value_objects.simulation_scenario import SimulationScenario
 
 #: A fixed instant used across the suite so assertions read as constants.
 #: Deliberately not "now": tests that depend on the real clock are the ones
@@ -102,6 +105,38 @@ def make_prediction(
         model_version=model_version,
         prediction_id=prediction_id,
         horizon=horizon,
+    )
+
+
+def make_simulation_run(
+    session_id: str = "sim-bd-test",
+    machine_id: str = "M001",
+    scenario: SimulationScenario = SimulationScenario.BEARING_DEGRADATION,
+    seed: int = 1,
+    minutes: int = 120,
+    created_at: datetime | None = None,
+    started_at: datetime | None = None,
+    status: RunStatus = RunStatus.PENDING,
+    completed_ticks: int = 0,
+) -> SimulationRun:
+    """Build a simulation run.
+
+    Defaults to 120 minutes rather than the ten `MASTERPLAN.md` uses as its
+    example: at a one-minute sample interval, ten minutes is ten readings, which
+    is below the sixty the model needs and so could never be scored. The
+    default here is one a test can actually reason about.
+    """
+    return SimulationRun(
+        session_id=session_id,
+        machine_id=MachineId(machine_id),
+        scenario=scenario,
+        seed=seed,
+        started_at=started_at or DEFAULT_NOW,
+        sample_interval=timedelta(minutes=1),
+        duration=timedelta(minutes=minutes),
+        created_at=created_at or DEFAULT_NOW,
+        status=status,
+        completed_ticks=completed_ticks,
     )
 
 

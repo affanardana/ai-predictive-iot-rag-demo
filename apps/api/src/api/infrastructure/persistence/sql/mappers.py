@@ -16,17 +16,21 @@ from datetime import UTC, datetime, timedelta
 from api.domain.entities.incident import Incident
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
+from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.value_objects.failure_probability import FailureProbability
 from api.domain.value_objects.incident_status import IncidentStatus
 from api.domain.value_objects.incident_type import IncidentType
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity, RiskLevel
+from api.domain.value_objects.run_status import RunStatus
 from api.domain.value_objects.sensor_reading import SensorReading
+from api.domain.value_objects.simulation_scenario import SimulationScenario
 from api.infrastructure.persistence.sql.models import (
     IncidentModel,
     MachineModel,
     PredictionModel,
+    SimulationRunModel,
     TelemetryModel,
 )
 
@@ -169,4 +173,54 @@ def incident_from_model(model: IncidentModel) -> Incident:
         incident_id=model.incident_id,
         status=IncidentStatus(model.status),
         prediction_id=model.prediction_id,
+    )
+
+
+def simulation_run_to_model(run: SimulationRun) -> SimulationRunModel:
+    """Build a persistence model from a simulation run entity.
+
+    Durations are stored as whole seconds, which is what makes the tick count
+    recoverable: `duration_seconds // sample_interval_seconds` must equal
+    `int(duration / sample_interval)`, and both are exact for the whole-second
+    values the API accepts.
+    """
+    return SimulationRunModel(
+        session_id=run.session_id,
+        machine_id=run.machine_id.value,
+        scenario=run.scenario.value,
+        seed=run.seed,
+        started_at=run.started_at,
+        sample_interval_seconds=int(run.sample_interval.total_seconds()),
+        duration_seconds=int(run.duration.total_seconds()),
+        tick_seconds=run.tick_seconds,
+        status=run.status.value,
+        created_at=run.created_at,
+        completed_ticks=run.completed_ticks,
+        last_heartbeat_at=run.last_heartbeat_at,
+        finished_at=run.finished_at,
+        detail=run.detail,
+        resume_count=run.resume_count,
+    )
+
+
+def simulation_run_from_model(model: SimulationRunModel) -> SimulationRun:
+    """Build a simulation run entity from a persistence model."""
+    return SimulationRun(
+        session_id=model.session_id,
+        machine_id=MachineId(model.machine_id),
+        scenario=SimulationScenario(model.scenario),
+        seed=model.seed,
+        started_at=as_aware(model.started_at),
+        sample_interval=timedelta(seconds=model.sample_interval_seconds),
+        duration=timedelta(seconds=model.duration_seconds),
+        tick_seconds=model.tick_seconds,
+        status=RunStatus(model.status),
+        created_at=as_aware(model.created_at),
+        completed_ticks=model.completed_ticks,
+        last_heartbeat_at=(
+            as_aware(model.last_heartbeat_at) if model.last_heartbeat_at is not None else None
+        ),
+        finished_at=as_aware(model.finished_at) if model.finished_at is not None else None,
+        detail=model.detail,
+        resume_count=model.resume_count,
     )

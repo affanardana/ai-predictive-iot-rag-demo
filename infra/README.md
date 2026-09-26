@@ -16,7 +16,10 @@ Present today:
 
 Not yet built:
 
-- deployment configuration for the web app (Vercel, Phase 7).
+- **the Vercel deployment itself.** `apps/web/vercel.json` and the build are in
+  place, and `apps/web/README.md` has the two settings the project needs — but
+  creating the project, setting `VITE_API_BASE_URL` and deploying are the owner's
+  actions, and the app has never run against the hosted API.
 
 **The `modal_app.py` files are superseded but not deleted.** They are the
 specification the Dockerfiles were translated from, they still work, and they
@@ -28,11 +31,16 @@ beside the code they deploy rather than here, because they are application code:
 ## Where everything runs
 
 ```text
-VPS (Docker Compose)     Caddy · API · model service · n8n
+VPS (Docker Compose)     Caddy · API · model service · simulator · n8n
 Supabase                 PostgreSQL
 broker.emqx.io           MQTT
-Vercel                   the web app, Phase 7
+Vercel                   the web app (not yet deployed)
 ```
+
+The simulator joined this list in Phase 8, and its absence before that was a
+requirement the project had been failing rather than a gap in this diagram:
+`PRD.md` AC-010 requires the demonstration to run without a locally running
+simulator, and both runbooks used to instruct one. See `../docs/adr/0008`.
 
 Migrations are applied from a developer machine rather than from a container —
 a batch operation with one writer, so a cold start must not race another replica

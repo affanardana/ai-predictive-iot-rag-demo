@@ -7,16 +7,21 @@ application and presentation test doubles rather than merely convenient.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 from api.domain.entities.incident import Incident
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
+from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
-from api.domain.errors import IncidentNotFoundError
-from api.domain.value_objects.incident_status import IncidentStatus
+from api.domain.errors import (
+    IncidentNotFoundError,
+    PersistenceError,
+    SimulationRunNotFoundError,
+)
+from api.domain.value_objects.incident_status import OPEN_INCIDENT_STATUSES, IncidentStatus
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.risk_level import IncidentSeverity
 from api.domain.value_objects.sensor_reading import SensorReading
@@ -87,7 +92,29 @@ class InMemoryTelemetryRepository:
         ]
         if not matching:
             return None
-        return deepcopy(max(matching, key=lambda record: record.recorded_at))
+        # `event_id` breaks ties, matching the SQL adapter and `latest_records`,
+        # so `latest_for` and `latest_for_many` cannot disagree.
+        return deepcopy(max(matching, key=lambda record: (record.recorded_at, record.event_id)))
+
+    async def latest_for_many(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, TelemetryRecord]:
+        """Return the most recent record for each machine."""
+        wanted = set(machine_ids)
+        newest: dict[MachineId, TelemetryRecord] = {}
+        for record in self._store.telemetry.values():
+            if record.machine_id not in wanted:
+                continue
+            current = newest.get(record.machine_id)
+            # `event_id` breaks ties, matching the SQL adapter's ORDER BY, so
+            # both agree on which of two same-instant records is the latest.
+            if current is None or (record.recorded_at, record.event_id) > (
+                current.recorded_at,
+                current.event_id,
+            ):
+                newest[record.machine_id] = record
+        return {machine_id: deepcopy(record) for machine_id, record in newest.items()}
 
     async def latest_records(self, machine_id: MachineId, limit: int) -> Sequence[TelemetryRecord]:
         """Return the most recent `limit` measurements, oldest first."""
@@ -179,7 +206,31 @@ class InMemoryPredictionRepository:
         ]
         if not matching:
             return None
-        return deepcopy(max(matching, key=lambda prediction: prediction.predicted_at))
+        # Tie-broken on the identifier for the same reason telemetry is: so this
+        # and `latest_for_many` cannot disagree.
+        return deepcopy(
+            max(
+                matching, key=lambda prediction: (prediction.predicted_at, prediction.prediction_id)
+            )
+        )
+
+    async def latest_for_many(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, Prediction]:
+        """Return the most recent prediction for each machine."""
+        wanted = set(machine_ids)
+        newest: dict[MachineId, Prediction] = {}
+        for prediction in self._store.predictions.values():
+            if prediction.machine_id not in wanted:
+                continue
+            current = newest.get(prediction.machine_id)
+            if current is None or (prediction.predicted_at, prediction.prediction_id) > (
+                current.predicted_at,
+                current.prediction_id,
+            ):
+                newest[prediction.machine_id] = prediction
+        return {machine_id: deepcopy(item) for machine_id, item in newest.items()}
 
     async def history_for(self, machine_id: MachineId, limit: int) -> Sequence[Prediction]:
         """Return recent predictions for a machine, most recent first."""
@@ -259,3 +310,107 @@ class InMemoryIncidentRepository:
             reverse=True,
         )
         return [deepcopy(incident) for incident in matching[:limit]]
+
+    async def open_counts_by_machine(
+        self,
+        machine_ids: Sequence[MachineId],
+    ) -> Mapping[MachineId, int]:
+        """Return how many incidents are open per machine."""
+        wanted = set(machine_ids)
+        counts: dict[MachineId, int] = {}
+        for incident in self._store.incidents.values():
+            if incident.machine_id not in wanted or incident.status not in OPEN_INCIDENT_STATUSES:
+                continue
+            counts[incident.machine_id] = counts.get(incident.machine_id, 0) + 1
+        return counts
+
+
+class InMemorySimulationRunRepository:
+    """In-memory store of simulation runs."""
+
+    def __init__(self, store: InMemoryStore) -> None:
+        self._store = store
+
+    async def add(self, run: SimulationRun) -> None:
+        """Record a new run.
+
+        Refuses a second active run for a machine, mirroring the partial unique
+        index the SQL adapter relies on. A real database enforces that in the
+        schema, so an adapter that let it through would pass here and fail in
+        production -- which is precisely the divergence the contract suite
+        exists to catch.
+
+        Raises `PersistenceError` rather than something more specific because
+        that is what the SQL adapter produces: its driver raises a unique
+        violation, which `translating_persistence_errors` converts. The two must
+        agree or the contract suite is testing two different behaviours.
+
+        This is a backstop, not the ordinary path. `StartSimulation` checks for
+        an active run first and reports a clean conflict; reaching here means
+        two requests raced, and the 500 that results is the honest symptom of
+        that.
+        """
+        active = await self.active_for_machine(run.machine_id)
+        if run.is_active and active is not None:
+            raise PersistenceError(
+                f"{run.machine_id} already has an active run ('{active.session_id}')."
+            )
+        self._store.simulations[run.session_id] = deepcopy(run)
+
+    async def update(self, run: SimulationRun) -> None:
+        """Persist changes to an existing run.
+
+        Raises:
+            SimulationRunNotFoundError: if no run carries this identifier.
+        """
+        if run.session_id not in self._store.simulations:
+            raise SimulationRunNotFoundError(run.session_id)
+        self._store.simulations[run.session_id] = deepcopy(run)
+
+    async def delete(self, session_id: str) -> None:
+        """Remove a run.
+
+        Raises:
+            SimulationRunNotFoundError: if no run carries this identifier.
+        """
+        if session_id not in self._store.simulations:
+            raise SimulationRunNotFoundError(session_id)
+        del self._store.simulations[session_id]
+
+    async def get(self, session_id: str) -> SimulationRun | None:
+        """Return one run, or None if unknown."""
+        run = self._store.simulations.get(session_id)
+        return deepcopy(run) if run is not None else None
+
+    async def list_recent(self, limit: int) -> Sequence[SimulationRun]:
+        """Return recent runs across the fleet, newest first."""
+        ordered = sorted(
+            self._store.simulations.values(),
+            key=lambda run: run.created_at,
+            reverse=True,
+        )
+        return [deepcopy(run) for run in ordered[:limit]]
+
+    async def list_for_machine(
+        self,
+        machine_id: MachineId,
+        limit: int,
+    ) -> Sequence[SimulationRun]:
+        """Return a machine's runs, newest first."""
+        matching = sorted(
+            (run for run in self._store.simulations.values() if run.machine_id == machine_id),
+            key=lambda run: run.created_at,
+            reverse=True,
+        )
+        return [deepcopy(run) for run in matching[:limit]]
+
+    async def active_for_machine(self, machine_id: MachineId) -> SimulationRun | None:
+        """Return the machine's active run, or None."""
+        for run in self._store.simulations.values():
+            if run.machine_id == machine_id and run.is_active:
+                return deepcopy(run)
+        return None
+
+    async def count_active(self) -> int:
+        """Return how many runs are active fleet-wide."""
+        return sum(1 for run in self._store.simulations.values() if run.is_active)

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+from api.domain.timestamps import ensure_aware
+
 #: One reading per minute, per the masterplan's dataset definition.
 DEFAULT_SAMPLE_INTERVAL = timedelta(minutes=1)
 
@@ -109,3 +111,40 @@ class SeriesResolution:
             * sample_interval.total_seconds()
         )
         return cls(bucket=timedelta(seconds=bucket_seconds), aggregation=aggregation)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedWindow:
+    """The instants a telemetry window was actually resolved against.
+
+    `SeriesResolution` says how a series was *reduced*; this says where it was
+    *cut*. They are separate because the cut is not always what the caller
+    asked for. `TimeWindow` names a duration, and a duration needs an anchor --
+    and the anchor is the newest stored reading rather than the wall clock, so
+    that a simulator whose timestamps run ahead of real time still produces a
+    series (see `GetTelemetryHistory`).
+
+    Carried on the response because a consumer must be able to tell. Without
+    it, a client holding a `1h` series has no way to know whether it covers the
+    last hour of wall-clock time or an hour of data ending somewhere else --
+    and during a fast-forwarded demonstration the answer is the second, which
+    looks like a bug in the chart until it is stated.
+    """
+
+    start: datetime
+    end: datetime
+
+    def __post_init__(self) -> None:
+        """Reject naive timestamps and an inverted interval."""
+        ensure_aware(self.start, "start")
+        ensure_aware(self.end, "end")
+        if self.start > self.end:
+            raise ValueError(
+                f"Resolved window start ({self.start.isoformat()}) is after its "
+                f"end ({self.end.isoformat()})."
+            )
+
+    @property
+    def duration(self) -> timedelta:
+        """Return the wall-clock length of the resolved interval."""
+        return self.end - self.start

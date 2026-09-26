@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.errors import InvalidTelemetryError, MachineNotFoundError
+from api.domain.ports.events import EventKind, EventPublisher, MachineEvent
 from api.domain.ports.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from api.domain.value_objects.machine_id import MachineId
 
@@ -41,6 +42,7 @@ class IngestTelemetry:
 
     unit_of_work_factory: UnitOfWorkFactory
     window_readings: int
+    events: EventPublisher
     max_batch_size: int = MAX_INGEST_BATCH
 
     async def execute(self, records: Sequence[TelemetryRecord]) -> IngestResult:
@@ -71,11 +73,34 @@ class IngestTelemetry:
             # most, and it costs one statement instead of one per machine.
             ready = await self._ready_machines(uow, records) if accepted else ()
 
+        # After the unit of work has exited, never inside it. A subscriber must
+        # not be told about a write that could still roll back.
+        if accepted:
+            await self._announce(records)
+
         return IngestResult(
             accepted=accepted,
             duplicates=len(records) - accepted,
             ready=ready,
         )
+
+    async def _announce(self, records: Sequence[TelemetryRecord]) -> None:
+        """Tell subscribers which machines this batch changed.
+
+        Only when something was actually inserted. A redelivered batch -- which
+        n8n produces routinely on retry -- changed nothing, and announcing it
+        would make every open dashboard refetch for no reason.
+
+        The batch carries only a count of inserts, not which of them landed, so
+        a machine whose records were all duplicates is announced alongside the
+        ones that were genuinely written. That is deliberately left alone: the
+        cost is a redundant refetch of one machine, and the alternative is a
+        second query per ingest to sharpen a hint.
+        """
+        for machine_id in _distinct_machines(records):
+            await self.events.publish(
+                MachineEvent(kind=EventKind.TELEMETRY_RECEIVED, machine_id=machine_id)
+            )
 
     async def _require_machines(self, uow: UnitOfWork, records: Sequence[TelemetryRecord]) -> None:
         """Refuse the batch if any machine it names is unregistered.

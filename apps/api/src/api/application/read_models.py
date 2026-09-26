@@ -14,8 +14,24 @@ from dataclasses import dataclass
 from api.domain.entities.incident import Incident
 from api.domain.entities.machine import Machine
 from api.domain.entities.prediction import Prediction
+from api.domain.entities.simulation_run import SimulationRun
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.value_objects.risk_level import RiskLevel
+
+
+@dataclass(frozen=True, slots=True)
+class SimulationRunView:
+    """A simulation run, with the two facts a client cannot derive.
+
+    Staleness needs a clock and a timeout, and the presentation layer has
+    neither. Computing it here means every client agrees about whether a run is
+    alive, using the same clock the runs were recorded against -- rather than
+    each browser guessing from its own and disagreeing.
+    """
+
+    run: SimulationRun
+    is_active: bool
+    is_stale: bool
 
 
 @dataclass(frozen=True, slots=True)

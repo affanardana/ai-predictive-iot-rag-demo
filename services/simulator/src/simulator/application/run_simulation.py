@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from simulator.domain.engine import MachineSimulator
+from simulator.domain.errors import SimulationValidationError
 from simulator.domain.ports import GroundTruthSink, TelemetrySink
 from simulator.domain.session import SimulationSession
 from simulator.domain.state import SimulationTick
@@ -77,6 +78,8 @@ def stream_session(
     tick_seconds: float = 0.0,
     sleep: Callable[[float], None] = time.sleep,
     on_tick: TickCallback | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    start_index: int = 0,
 ) -> RunSummary:
     """Emit ticks at a wall-clock pace, for watching a machine run.
 
@@ -87,19 +90,55 @@ def stream_session(
     at 300x — which is what makes an hour of degradation watchable in a
     demonstration.
 
-    `sleep` is injectable so a test can drive a paced stream without waiting.
+    `sleep` is injectable so a test can drive a paced stream without waiting, and
+    `should_stop` is consulted once per tick so a caller can end a run early.
+    Both are callables rather than a thread or a signal because that is the shape
+    the rest of this module already uses, and because a caller holding a stop
+    flag knows better than this function what "stop" means for it.
+
+    A run that stops early returns the same `RunSummary` a completed one does,
+    reporting what it actually emitted. It is not an error: an operator pressing
+    stop is the ordinary way a demonstration ends.
+
+    `start_index` resumes a run from where it reached. This is safe rather than
+    merely convenient, and `MachineSimulator`'s docstring is why: a machine's
+    condition is a pure function of the index, so tick `k` is the same whether
+    or not ticks 0 through `k-1` were ever requested. A resumed run therefore
+    produces exactly the tail of the original series, and every tick it re-emits
+    carries an `event_id` the ingest endpoint already holds -- so the duplicate
+    is dropped rather than counted twice.
+
+    Raises:
+        SimulationValidationError: if `start_index` is outside the run.
     """
+    if not 0 <= start_index <= session.tick_count:
+        raise SimulationValidationError(
+            f"start_index {start_index} is outside the run, which has {session.tick_count} ticks."
+        )
+
     simulators = [MachineSimulator(session, profile) for profile in session.machines]
     ticks = session.tick_count
-    emitted = 0
+    # Seeded from `start_index`, not zero: this counts the run's absolute
+    # progress. A run resumed at 100 has completed 101 ticks, and one resumed at
+    # the final tick -- a container that died after its last tick but before
+    # reporting it -- has completed them all, not none.
+    emitted = start_index
 
     try:
-        for index in range(ticks):
+        for index in range(start_index, ticks):
             for simulator in simulators:
                 _emit(simulator.tick(index), telemetry_sink, ground_truth_sink)
-            emitted += 1
+            # Counting the run's absolute progress, not this call's: a caller
+            # resuming at 100 has completed 101 ticks of the session, and a
+            # progress bar reading 1 of 240 would be worse than none.
+            emitted = index + 1
             if on_tick is not None:
                 on_tick(emitted, ticks)
+            # Checked after the tick rather than before, so a stop request that
+            # arrives mid-tick is honoured at the next boundary and the run
+            # never ends between a machine's two sinks.
+            if should_stop is not None and should_stop():
+                break
             if tick_seconds > 0.0 and emitted < ticks:
                 sleep(tick_seconds)
     finally:

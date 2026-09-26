@@ -29,6 +29,13 @@ dev = [
     "httpx>=0.28",
     "aiosqlite>=0.20",
     "modal>=1.5.5",
+    # Declared rather than borrowed from `modal`, which happens to depend on it.
+    # The deployment-shape tests parse `infra/compose/compose.yaml` to assert
+    # things a reviewer cannot check by reading it -- that the simulator service
+    # publishes no host port, and that it carries resource limits. Depending on
+    # another package's transitive dependency would make those tests fail the
+    # day `modal` changes its mind.
+    "pyyaml>=6.0",
 ]
 
 # ===========================================================================
@@ -103,6 +110,21 @@ known-first-party = ["api", "inference", "ml", "simulator"]
 # ===========================================================================
 [tool.mypy]
 python_version = "3.12"
+# Type-check as Linux, whatever the developer is running on.
+#
+# mypy evaluates `sys.platform` against the platform *it* is running on, and
+# `warn_unreachable` then reports the branches that platform cannot take. So
+# `if sys.platform != "win32": return` followed by Windows-only code passes on a
+# Windows development machine and fails on Linux CI -- the same file, the same
+# mypy, opposite verdicts. That is not hypothetical: it is what
+# `infrastructure/event_loop.py` did, and the local gate could never have caught
+# it, which makes the local gate worth less than it looks.
+#
+# Linux is the right answer rather than a coin toss. It is what production runs
+# and what CI runs, so a Windows-only path is checked against the platform that
+# actually executes it. A genuinely Windows-only branch would go unchecked,
+# which is the correct trade: it is not the one serving traffic.
+platform = "linux"
 mypy_path = ["apps/api/src", "services/simulator/src", "services/inference/src", "ml/src"]
 # Every workspace member must be listed. `uv run mypy` with no arguments uses
 # `files`, so a member missing from here is never type-checked and CI still
@@ -152,6 +174,13 @@ ignore_missing_imports = true
 # CI does not install it, so `uv run mypy` has to pass without it.
 [[tool.mypy.overrides]]
 module = ["paho", "paho.*"]
+ignore_missing_imports = true
+
+# PyYAML ships no `py.typed` marker and there is no stub package installed, so
+# mypy cannot see through it. Only the deployment-shape tests import it, and
+# what they do with it is structural -- read a mapping, assert a key is absent.
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*"]
 ignore_missing_imports = true
 
 # ===========================================================================
@@ -285,14 +314,20 @@ forbidden_modules = [
 allow_indirect_imports = true
 
 # --- Simulator layering ----------------------------------------------------
-#   cli             -> the composition point; the only module naming a sink
+#   cli | control   -> the composition points; the only modules naming a sink
 #   infrastructure | application -> siblings; both depend only on the domain
 #   domain          -> the simulation model, depending on nothing
+#
+# `control` is a peer of `cli`, not beneath it. Both are entry points that wire
+# the same application and infrastructure together, and neither is the other's
+# dependency -- so placing them on one rung is what enforces that they stay
+# independent. Anything they need to share goes a rung below, which is why
+# `infrastructure.broker` exists.
 [[tool.importlinter.contracts]]
 name = "Simulator layer dependency direction"
 type = "layers"
 layers = [
-    "simulator.cli",
+    "simulator.cli | simulator.control",
     "simulator.infrastructure | simulator.application",
     "simulator.domain",
 ]
