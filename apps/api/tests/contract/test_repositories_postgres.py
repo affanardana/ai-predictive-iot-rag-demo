@@ -276,7 +276,7 @@ async def test_check_constraint_rejects_an_unknown_risk_level(
         )
     )
 
-    with pytest.raises(DataError):
+    with pytest.raises(IntegrityError):
         await postgres_session.flush()
 
     await postgres_session.rollback()
@@ -386,7 +386,7 @@ async def test_the_vector_column_is_a_pgvector_type(
         )
     )
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(DataError):
         await postgres_session.flush()
 
     await postgres_session.rollback()

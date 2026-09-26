@@ -180,7 +180,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate_parser.add_argument("--questions", type=Path, default=Path(DEFAULT_QUESTIONS))
     evaluate_parser.add_argument("--api-url", default=DEFAULT_API_URL)
-    evaluate_parser.add_argument("--limit", type=int, default=5)
+    # Ten, not the five an answer would be given: recall@k for k above the
+    # result limit is bounded by that limit rather than by retrieval, and the
+    # first measured run reported recall@10 identical to recall@5 for exactly
+    # that reason. Measuring wider than an answer needs is the point of
+    # measuring.
+    evaluate_parser.add_argument("--limit", type=int, default=10)
     evaluate_parser.add_argument("--out", type=Path, default=None)
 
     return parser
@@ -344,7 +349,11 @@ def _knowledge_evaluate(args: argparse.Namespace) -> int:
     without = evaluation.measure(vector_answers)
     with_rerank = evaluation.measure(reranked_answers)
 
-    print(evaluation.render_comparison(without, with_rerank, documents=documents))
+    print(
+        evaluation.render_comparison(
+            without, with_rerank, documents=documents, result_limit=args.limit
+        )
+    )
     # The score summary goes underneath because the abstention row above cannot
     # be read without it: the two stages rank on different scales, and both are
     # compared against one threshold.

@@ -230,8 +230,25 @@ def test_the_comparison_prints_both_runs_side_by_side() -> None:
     answers = [an_answer(("bearing-inspection-sop", "vibration-diagnosis-guide"))]
     both = measure(answers)
 
-    rendered = render_comparison(both, both, documents=10)
+    rendered = render_comparison(both, both, documents=10, result_limit=10)
 
     assert "recall@3" in rendered
     assert "abstained when unanswerable" in rendered
     assert "corpus: 10 documents" in rendered
+    assert "results per question: 10" in rendered
+
+
+def test_a_recall_cut_above_the_result_limit_says_it_is_bounded() -> None:
+    """recall@10 cannot mean anything when five results are returned.
+
+    The first measured run reported recall@10 identical to recall@5 for exactly
+    that reason, which reads as retrieval finding nothing new between five and
+    ten rather than as a bound.
+    """
+    answers = [an_answer(("bearing-inspection-sop",))]
+    both = measure(answers)
+
+    rendered = render_comparison(both, both, documents=10, result_limit=5)
+
+    assert "results per question: 5" in rendered
+    assert "recall@10 bounded by it" in rendered

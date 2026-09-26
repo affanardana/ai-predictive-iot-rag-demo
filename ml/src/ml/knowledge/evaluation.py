@@ -281,7 +281,13 @@ def _number(value: float | None) -> str:
     return "—" if value is None else f"{value:.2f}"
 
 
-def render_comparison(without: Metrics, with_rerank: Metrics, *, documents: int) -> str:
+def render_comparison(
+    without: Metrics,
+    with_rerank: Metrics,
+    *,
+    documents: int,
+    result_limit: int | None = None,
+) -> str:
     """Render both runs side by side.
 
     The pair is the honest way to report "reranking is implemented" on a corpus
@@ -323,9 +329,18 @@ def render_comparison(without: Metrics, with_rerank: Metrics, *, documents: int)
     ]
     lines.extend(f"{label:<{width}}  {left:>11}  {right:>11}" for label, left, right in rows)
     # Recall is quoted with the corpus size, because recall@10 over a hundred
-    # passages measures very little and a reader has to know which it is.
+    # passages measures very little and a reader has to know which it is. The
+    # result limit is quoted for the same reason: a k above it is bounded by the
+    # limit rather than by retrieval.
     lines.append("")
     lines.append(f"corpus: {documents} documents")
+    if result_limit is not None:
+        bounded = [k for k in RECALL_KS if k > result_limit]
+        line = f"results per question: {result_limit}"
+        if bounded:
+            names = ", ".join(f"recall@{k}" for k in bounded)
+            line += f" — {names} bounded by it, not by retrieval"
+        lines.append(line)
     return "\n".join(lines)
 
 
