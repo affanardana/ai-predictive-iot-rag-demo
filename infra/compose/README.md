@@ -53,7 +53,7 @@ ls services/inference/modal_app.py infra/compose/compose.yaml infra/n8n/telemetr
 
 All three must be listed.
 
-**Two model files, copied by hand.** `best.pt` and `normalization.json` are
+**Three model files, placed by hand.** `best.pt` and `normalization.json` are
 gitignored, so a clone cannot contain them and the inference container will not
 start without them. From the development machine:
 
@@ -66,6 +66,29 @@ scp data/training/normalization.json root@72.61.214.194:/root/opt/pdm/infra/comp
 The layout matters. `INFERENCE_CHECKPOINT` is `/model/best.pt` and
 `INFERENCE_ARTIFACT_DIR` is `/model/artifact`, and the service checks for
 `normalization.json` inside the latter before it will open its port.
+
+The third is the Copilot's language model, downloaded on the host rather than
+copied from a laptop — 940 MB over a home connection is a worse use of the
+bandwidth than a `curl` from the box:
+
+```bash
+cd /root/opt/pdm/infra/compose/model
+mkdir -p chat && cd chat
+curl -fL -o qwen2.5-1.5b-instruct-q4_k_m.gguf \
+  https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
+ls -lh qwen2.5-1.5b-instruct-q4_k_m.gguf     # ~940 MB
+```
+
+**Place it before `docker compose up`, and note the failure mode.** The
+inference container mounts the model directory read-only and loads whatever
+`INFERENCE_CHAT_MODEL` points at, and a path that is configured but missing is a
+startup failure rather than a silent downgrade — the container exits with
+`INFERENCE_CHAT_MODEL names '…', which is not there. Unset it to run without the
+Copilot's model.` That is the intended direction (a Copilot that cannot answer
+should say so loudly), but it means the file has to be there first. The file
+*name* is the only place the model's identity is written down: the API reports it
+in every answer as `model_id`, and both sides read it from `CHAT_MODEL_FILE` in
+`.env`.
 
 ## Deploying
 
@@ -251,6 +274,25 @@ should serve its evidence without generated prose. Peak RSS is the other: the
 inference container's limit has to cover it with room to spare, on a host with
 no swap.
 
+**Measured on this host, 2026-09-27:**
+
+```
+load          20.6 s
+prefill        8.9 s   (a real prompt: evidence blocks and a question)
+decode        12.9 s   (101 tokens) = 7.8 tokens/second
+answer total  21.8 s
+peak RSS    1724 MiB
+```
+
+Three things follow, and all three are in the code rather than in this table.
+The container's limit went from 1536m to **2560m**: 1724 MiB of model plus the
+506 MiB the LSTM and two encoders already hold is about 2230 MiB, and a host
+with no swap turns a limit that is merely close into an OOM kill — most likely
+mid-answer. `start_period` went to 240s, because the load happens at startup and
+a container reported unhealthy while it is still loading is a false alarm on
+every deploy. And the page streams the answer, because 21.8 seconds of silence
+reads as a broken page and 21.8 seconds of arriving text reads as work.
+
 ## Running the demonstration
 
 Register the machine first, or every reading is refused:
@@ -269,6 +311,35 @@ which this stack did not satisfy until Phase 8.
 
 Reading 60 arrives about a minute in, and that is when the first prediction
 fires.
+
+### Asking the Copilot
+
+Once M003 has a prediction and the corpus is ingested, `/copilot` answers
+questions about it. `PRD.md` AC-007's question is the one the page is seeded
+with, and it is the one worth asking first:
+
+> Why is M003 becoming risky and what should I inspect according to the SOP?
+
+A good answer has all four kinds of evidence in it — a reading, a prediction, a
+trend, and a procedure with its document, section and page — and takes about
+twenty seconds, most of which is spent watching the sources being read.
+
+Then the control, which is the half that matters: ask something the documentation
+does not cover.
+
+> What is the torque spec for the M003 gearbox output shaft?
+
+The corpus has no torque specification, so the answer must be a **refusal**, not
+a procedure. A system that improvises here is worse than one that says nothing,
+and this is the question that shows which it is. The verdict travels in the
+frame's `done` payload, so it can be checked without reading the prose:
+
+```bash
+curl -sN "https://pdm-api.72-61-214-194.sslip.io/api/v1/copilot/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Why is M003 becoming risky and what should I inspect according to the SOP?"}' \
+  | grep -A1 "^event: done"
+```
 
 ### Why the notional duration is 240 minutes
 
@@ -295,6 +366,20 @@ less CPU, not more.
 So the simulator service carries explicit limits in `compose.yaml`, and the API
 refuses more than three concurrent runs. Both are estimates rather than
 measurements; tune them from `docker stats` during a real run.
+
+**Asking the Copilot a question is the most expensive single thing this box
+does** — about twenty seconds of a core, and 1.7 GB resident while it happens.
+Two consequences worth knowing before a demonstration:
+
+```bash
+docker stats --no-stream        # during a question, not after it
+```
+
+The API answers one question at a time and returns `409 chat_busy` for a second,
+which is the bound working. Running a simulation *and* asking a question at the
+same time is possible but competes for the same core: the answer takes longer,
+and the run's tick may drift. If the demonstration needs both, ask the question
+first.
 
 **Runs are bounded, and an idle simulator costs nothing.** It sits healthy and
 does nothing until the dashboard asks it to start, so unlike the old manual
@@ -333,6 +418,10 @@ windowed, so an earlier run falls out of the one-hour view on its own.
 | n8n will not start: `Mismatching encryption keys` | `N8N_ENCRYPTION_KEY` changed after first boot. Restore the original, or wipe the `n8n-data` volume and start again — there is no third option. |
 | Inference container restarts repeatedly | `best.pt` or `artifact/normalization.json` is missing from `MODEL_DIR`. The service exits rather than serving degraded, so the log names the file. |
 | `inference_unavailable` (503) from the API | The inference container is down or still loading. On one core, a cold start takes a while. |
+| Inference container restarts naming `INFERENCE_CHAT_MODEL` | The GGUF is not at the path `.env`'s `CHAT_MODEL_FILE` resolves to. Either place it (`<MODEL_DIR>/chat/<file>`) or comment the variable out — the service runs without a chat model and says so, but prediction and retrieval go down with it if the path is set and wrong. |
+| `chat_unavailable` (503) from `/copilot/chat` | The Copilot's model is not loaded. Check `/health` on the inference service: `chat_model: null` means it started without one. |
+| `chat_busy` (409) from `/copilot/chat` | Another question is being answered. One core, one answer at a time — this is the bound working, not a fault. Wait about twenty seconds. |
+| An answer arrives with verdict `FALLBACK` | The grounding check caught a number in the model's prose that was in none of the evidence. The evidence is served instead. Occasional is expected from a 1.5B model; constant means the prompt needs tuning against the real weights. |
 | Inference container restarts naming a model, after a rebuild | The build could not reach HuggingFace, so the weights were not baked in. `HF_HUB_OFFLINE=1` is set at runtime on purpose: a missing model fails loudly rather than reaching for the network mid-demonstration. Rebuild with the network up. |
 | `retrieval_unavailable` (503) from `/knowledge/search` | The same container, one stage further along — embedding or reranking could not be performed. Note this is *not* the same as "no documents matched", which is a 200 with `sufficient: false`. |
 | `/knowledge` shows no documents | The corpus has not been ingested. Run the `ingest` service above. |

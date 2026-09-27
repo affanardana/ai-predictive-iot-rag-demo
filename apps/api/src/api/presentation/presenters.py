@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from api.application.read_models import MachineDetail, MachineSummary, SimulationRunView
+from api.application.use_cases import CopilotAnswer
 from api.domain.entities.incident import Incident
 from api.domain.entities.knowledge_document import KnowledgeDocument
 from api.domain.entities.machine import Machine
@@ -18,8 +19,14 @@ from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.read_models import TelemetrySeries
 from api.domain.value_objects.chunk_match import ChunkMatch
 from api.domain.value_objects.citation import Citation
+from api.domain.value_objects.copilot import ToolCall
 from api.domain.value_objects.sensor_reading import SensorReading
 from api.domain.value_objects.text_line import TextLine
+from api.presentation.schemas.copilot import (
+    CopilotAnswerSchema,
+    EvidenceSchema,
+    ToolCallSchema,
+)
 from api.presentation.schemas.incident import IncidentSchema
 from api.presentation.schemas.knowledge import (
     CitationSchema,
@@ -244,3 +251,36 @@ def to_knowledge_match(match: ChunkMatch) -> KnowledgeMatchSchema:
 def to_knowledge_match_list(matches: Sequence[ChunkMatch]) -> list[KnowledgeMatchSchema]:
     """Translate a sequence of retrieved passages."""
     return [to_knowledge_match(match) for match in matches]
+
+
+def to_tool_call(call: ToolCall) -> ToolCallSchema:
+    """Translate one tool's activity, for the stream's activity trail."""
+    return ToolCallSchema(
+        tool=call.tool,
+        summary=call.summary,
+        evidence_count=call.evidence_count,
+    )
+
+
+def to_copilot_answer(answer: CopilotAnswer) -> CopilotAnswerSchema:
+    """Translate a finished answer and everything behind it.
+
+    The evidence is rendered here rather than by the client, so that what a
+    reader checks the prose against is the same text the model was given --
+    one rendering, not two that could differ.
+    """
+    return CopilotAnswerSchema(
+        question=answer.question,
+        verdict=answer.verdict,
+        answer=answer.answer,
+        machine_id=answer.machine_id.value if answer.machine_id is not None else None,
+        evidence=[
+            EvidenceSchema(kind=item.kind, text=item.value, source=item.source)
+            for item in answer.evidence
+        ],
+        citations=[to_citation(citation) for citation in answer.citations],
+        tool_calls=[to_tool_call(call) for call in answer.tool_calls],
+        reason=answer.reason,
+        ungrounded=list(answer.ungrounded),
+        model_id=answer.model_id,
+    )

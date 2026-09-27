@@ -10,7 +10,10 @@ maintenance procedures, distinguishing what was observed, what was predicted,
 and what is documented — built with FastAPI, React, PyTorch, PostgreSQL and
 Supabase.
 
-> In development: the backend, database, telemetry simulator, predictive model,
-> dashboard and maintenance-document retrieval are in place. The Copilot that
-> answers questions over them is not yet built. All telemetry and documentation
-> are synthetic demonstration material.
+> In development, and self-hosted end to end: the backend, database, telemetry
+> simulator, predictive model, dashboard, maintenance-document retrieval and the
+> Copilot are all deployed and answering. The Copilot's language model runs on
+> the same host as everything else — no hosted API, and no per-question cost —
+> so its answers are plainer than a large model's and its grounding is checked
+> rather than assumed. All telemetry and documentation are synthetic
+> demonstration material.

@@ -93,6 +93,20 @@ class Settings(BaseSettings):
     #: with nothing logged.
     knowledge_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2@main"
 
+    #: The Copilot's language model, as the inference service names it. It
+    #: travels into every answer as provenance, so a reader can see which model
+    #: wrote the prose -- the evidence is attached by the system and unaffected
+    #: by a model swap, and naming the model is what lets the two be judged
+    #: separately. `compose.yaml` sets it from the same value the inference
+    #: container is given, so the two cannot drift.
+    copilot_model: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+    #: How many questions the Copilot may be answering at once. One, because a
+    #: generation burns the single core for about twenty seconds: a second
+    #: question would halve the speed of the first and leave both readers
+    #: waiting twice as long.
+    copilot_max_concurrent_questions: int = 1
+
     #: Lowest rerank score that counts as evidence, below which the answer is
     #: "the documentation does not cover this" (PRD section 19). The default is
     #: deliberately permissive and is meant to be replaced by the value a

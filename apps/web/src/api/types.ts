@@ -53,6 +53,19 @@ export type SearchKnowledgeRequest = Schemas['SearchKnowledgeRequest']
 export type SearchKnowledgeResponse = Schemas['SearchKnowledgeResponse']
 export type DocumentCategory = Schemas['DocumentCategory']
 
+// --- Copilot ---------------------------------------------------------------
+
+/**
+ * The request only.
+ *
+ * The answer comes back inside a `text/event-stream` body, which OpenAPI
+ * cannot describe, so those types are hand-written in `api/stream.ts` beside
+ * the parser that reads them. What the browser *sends* is describable, and this
+ * is it.
+ */
+export type AskRequest = Schemas['AskRequest']
+export type ConversationTurn = Schemas['ConversationTurn']
+
 // --- Enums the UI switches on ----------------------------------------------
 
 export type RiskLevel = Schemas['RiskLevel']

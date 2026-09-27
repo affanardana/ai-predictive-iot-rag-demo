@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from api.domain.errors import (
+    ChatBusyError,
+    ChatUnavailableError,
     ChunkTooLongError,
     DocumentContentConflictError,
     DomainError,
@@ -78,6 +80,13 @@ ERROR_CATALOG: Mapping[type[DomainError], ErrorMapping] = {
     # Not an outage: the service is up and running a model the corpus was not
     # embedded with. 503 because the deployment has to change, not the request.
     EmbeddingModelMismatchError: ErrorMapping(503, "embedding_model_mismatch"),
+    # The Copilot's model is down or still loading. Distinct from
+    # `retrieval_unavailable` because a reader is told which of two services is
+    # out, and the page says different things for each.
+    ChatUnavailableError: ErrorMapping(503, "chat_unavailable"),
+    # A conflict, not an outage: one answer at a time on a one-core box, and the
+    # caller's remedy is to ask again shortly.
+    ChatBusyError: ErrorMapping(409, "chat_busy"),
     # Should be unreachable -- the chunker caps chunk length -- so a 500 is the
     # honest answer: something is wrong with this service, not with the request.
     ChunkTooLongError: ErrorMapping(500, "chunk_too_long"),

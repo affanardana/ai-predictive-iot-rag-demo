@@ -69,6 +69,16 @@ services:
       # permissive; `ml knowledge evaluate` prints the separation it should be
       # set from.
       KNOWLEDGE_MINIMUM_SCORE: ${KNOWLEDGE_MINIMUM_SCORE:-0.0}
+      # Which model wrote the prose, as the file's name. This is the *name* of
+      # the same file the inference container loads by path, taken from one
+      # variable so the two cannot disagree -- the same device as
+      # INGEST_API_TOKEN. An answer carries this string as provenance, so a swap
+      # that updated only one side would name a model that did not write it.
+      COPILOT_MODEL: ${CHAT_MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      # How many questions may be answered at once. One core, so one: a second
+      # answer would halve the speed of the first. Raise it only after watching
+      # `docker stats` during a real question.
+      COPILOT_MAX_CONCURRENT_QUESTIONS: ${COPILOT_MAX_CONCURRENT_QUESTIONS:-1}
     ports:
       # Loopback only. This is not a public exposure -- it exists so the shared
       # Caddy on the host network can reach the container by port, which is how
@@ -114,7 +124,32 @@ services:
     # one service that grows without bound takes the demonstration with it --
     # and it is generous because a batch of chunks through a cross-encoder is
     # the largest thing this box is asked to do.
-    mem_limit: 1536m
+    #
+    # Phase 10 raised it from 1536m, and the arithmetic is measured rather than
+    # guessed: the LSTM and both encoders peak at 506 MiB, and the Copilot's
+    # model is 940 MB on disk and **1724 MiB resident** with its KV cache, so
+    # the service now needs about 2230 MiB. This host has no swap, which makes
+    # the difference between "tight" and "an OOM kill that takes the answer with
+    # it" -- so the limit is set above the measurement rather than near it. The
+    # weights are mmap'd, which is what lets the kernel evict those pages under
+    # pressure instead of killing the container; that is the closest thing to
+    # swap this box has, and it comes free with the GGUF.
+    mem_limit: 2560m
+    environment:
+      # The Copilot's language model, by path, inside the read-only model mount
+      # below. **Placed by hand rather than fetched**, for the reason `best.pt`
+      # is: it is a 940 MB file that changes when someone swaps models, and a
+      # rebuild to change it would mean a 940 MB download on a one-core box.
+      #
+      # One variable, two readers: the file's *name* goes to the API as
+      # COPILOT_MODEL above. Set `CHAT_MODEL_FILE` in `.env` to swap models and
+      # both follow.
+      INFERENCE_CHAT_MODEL: /model/chat/${CHAT_MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      # The context window, and so the KV cache that stays resident between
+      # questions. 2048 rather than the model's 32768: the prompt this service
+      # is sent is a few hundred tokens, and the cache is memory this box does
+      # not have to spare.
+      INFERENCE_CHAT_CONTEXT: ${INFERENCE_CHAT_CONTEXT:-2048}
     volumes:
       # Two files the image cannot contain: `best.pt` and
       # `artifact/normalization.json` are gitignored, so a build from a clone
@@ -143,7 +178,12 @@ services:
       # Importing torch and loading the checkpoint takes a while on one core,
       # and the service refuses to open its port until the scorer exists. The
       # Modal deployment needed `startup_timeout=300` for the same reason.
-      start_period: 180s
+      #
+      # Raised from 180s in Phase 10: the Copilot's model adds 20.6 seconds of
+      # load to the same boot. A container that reports unhealthy while it is
+      # still starting is a false alarm on every deploy, and this is the number
+      # that stops it being one.
+      start_period: 240s
 
   # ---------------------------------------------------------------------------
   # The simulator.

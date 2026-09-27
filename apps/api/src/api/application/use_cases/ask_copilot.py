@@ -10,7 +10,7 @@ produces is checked again.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from api.application.use_cases.get_machine_detail import GetMachineDetail
@@ -19,7 +19,7 @@ from api.application.use_cases.get_telemetry_history import GetTelemetryHistory
 from api.application.use_cases.list_incidents import ListIncidents
 from api.application.use_cases.list_machines import ListMachines
 from api.application.use_cases.search_maintenance_knowledge import SearchMaintenanceKnowledge
-from api.domain.errors import MachineNotFoundError
+from api.domain.errors import ChatBusyError, MachineNotFoundError
 from api.domain.ports.chat import ChatMessage, ChatModel, ChatRole
 from api.domain.read_models import TelemetrySeries
 from api.domain.services.copilot_plan import plan_question
@@ -124,6 +124,33 @@ class AskCopilot:
     search_knowledge: SearchMaintenanceKnowledge
     chat: ChatModel
     max_tokens: int = MAX_ANSWER_TOKENS
+
+    #: How many questions may be answered at once, from
+    #: `COPILOT_MAX_CONCURRENT_QUESTIONS` by way of `Settings`. One, and the
+    #: count is the whole bound: a generation burns the single core for about
+    #: twenty seconds, so a second question would halve the speed of the first
+    #: and leave both readers waiting twice as long.
+    max_concurrent: int = 1
+
+    #: `compare=False` because it is a resource rather than part of what makes
+    #: one use case equal another.
+    _in_flight: int = field(default=0, compare=False)
+
+    def claim(self) -> None:
+        """Take the single answer slot, or refuse.
+
+        Called by the route *before* it commits to a streaming response. That
+        ordering is the reason this is a method rather than something `execute`
+        does for itself: once a 200 has begun, a refusal can only be a frame,
+        and a busy Copilot should be a 409 like any other conflict.
+        """
+        if self._in_flight >= self.max_concurrent:
+            raise ChatBusyError
+        object.__setattr__(self, "_in_flight", self._in_flight + 1)
+
+    def release(self) -> None:
+        """Give the slot back, whatever happened."""
+        object.__setattr__(self, "_in_flight", max(0, self._in_flight - 1))
 
     async def execute(
         self,

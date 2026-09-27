@@ -13,6 +13,7 @@ from api.composition.container import Container
 from api.presentation.errors import register_error_handlers
 from api.presentation.middleware import RequestContextMiddleware
 from api.presentation.routers import (
+    copilot_router,
     events_router,
     health_router,
     incidents_router,
@@ -101,6 +102,7 @@ def create_app(container: Container) -> FastAPI:
     app.include_router(telemetry_router, prefix=API_V1_PREFIX)
     app.include_router(simulations_router, prefix=API_V1_PREFIX)
     app.include_router(knowledge_router, prefix=API_V1_PREFIX)
+    app.include_router(copilot_router, prefix=API_V1_PREFIX)
     app.include_router(events_router, prefix=API_V1_PREFIX)
 
     return app

@@ -13,6 +13,7 @@ from typing import Annotated, cast
 from fastapi import Depends, Header, Request
 
 from api.application.use_cases import (
+    AskCopilot,
     GetMachineDetail,
     GetPredictionHistory,
     GetTelemetryHistory,
@@ -135,6 +136,11 @@ def get_set_active_document_version(container: ContainerDep) -> SetActiveDocumen
     return container.set_active_document_version
 
 
+def get_ask_copilot(container: ContainerDep) -> AskCopilot:
+    """Resolve the Copilot use case."""
+    return container.ask_copilot
+
+
 def get_event_subscriber(container: ContainerDep) -> EventSubscriber:
     """Resolve the event stream's subscriber half.
 
@@ -198,6 +204,7 @@ SearchMaintenanceKnowledgeDep = Annotated[
 SetActiveDocumentVersionDep = Annotated[
     SetActiveDocumentVersion, Depends(get_set_active_document_version)
 ]
+AskCopilotDep = Annotated[AskCopilot, Depends(get_ask_copilot)]
 
 #: Declared on a router rather than per route, so a new write cannot be added
 #: to it and silently go unauthenticated.

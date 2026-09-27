@@ -257,6 +257,64 @@ and orders them better, at a cost per candidate — hence a bounded candidate li
 measure what the stage contributes. An outage still returns 503: falling back
 silently would make the ranking quietly worse with nothing logged.
 
+## The Copilot
+
+A question in, an answer grounded in evidence out, with the evidence attached by
+the system rather than reported by the model:
+
+```text
+question ─▶ plan_question()          pure, in the domain: which tools, which
+              │                      machine, which window — a table, not a model
+              ▼
+        the API's own use cases      in-process; the Copilot invents no reads
+              │                      OBSERVED · PREDICTED · DOCUMENTED · INFERRED
+              ▼
+        insufficient? ──yes──▶ PRD §19's refusal, and the model is never called
+              │no
+              ▼
+        prompt ──HTTP──▶ inference container: llama.cpp + Qwen2.5-1.5B  [ndjson]
+              │                          │ tokens stream back
+              ▼                          ▼
+        grounding check ─▶ SSE frames ─▶ browser
+```
+
+**The system selects the tools; the model writes the prose.** `MASTERPLAN.md`
+section 6 asks for dynamic source selection, and it gets it — from
+`plan_question()`, a pure function tested against that section's own worked
+examples, because a 1.5B model picks the right tool about half the time. The
+model is handed labelled evidence and given no tools, no retrieval and no
+ability to fetch anything: the blast radius of a bad generation is a bad
+paragraph, never a bad read.
+
+**PRD section 19 is enforced by not asking.** If the plan wanted documentation
+and retrieval says the corpus does not cover it, the API answers with that
+section's own sentence and the model is never called. A refusal the system
+writes cannot be talked out of it, which is the only version of the rule a small
+model cannot break.
+
+**Three verdicts, because there are three things that can happen.** `ANSWERED`;
+`REFUSED` (the evidence does not support an answer — a 200, because the request
+was fine and the system is answering honestly); `FALLBACK` (the evidence was
+good and the model's prose contained a number that was in none of it, so the
+deterministic rendering is served instead and the offending values are reported
+rather than quietly corrected). `grounding.py` is a pure function over the
+answer and the evidence, and `[1]`-style citation markers are stripped before it
+reads a number — otherwise every cited answer would look fabricated.
+
+**Evidence kinds are assigned where the value is produced**, never by the model:
+a reading is `OBSERVED`, a classifier's output is `PREDICTED`, a retrieved
+passage is `DOCUMENTED` (and `Evidence.__post_init__` refuses one without a
+source), and a fitted trend is `INFERRED` while its endpoints stay `OBSERVED`.
+The four vocabularies are PRD section 16's, and the page renders them grouped so
+a prediction is never read as a measurement.
+
+**The frame shape cannot be generated.** The answer travels inside a
+`text/event-stream` body, which OpenAPI cannot describe, so
+`apps/web/src/api/stream.ts` mirrors it by hand — the second such file, after
+`realtime/types.ts`. Both sides pin the same literals:
+`test_the_copilot_contract_is_stable` on the server, `stream.test.ts` on the
+client. A rename on either side fails a suite rather than freezing a page.
+
 ## Known limitations
 
 - **The event stream is fanned out in memory, so the API must stay a single
@@ -286,6 +344,13 @@ silently would make the ranking quietly worse with nothing logged.
   one-core box. Four bounds stand in for the token a browser cannot hold: one
   active run per machine, a fleet-wide ceiling, a 60-minute floor on duration,
   and the container's own limits. See ADR 0008.
+- **`POST /api/v1/copilot/chat` is unguarded, and spends about twenty seconds of
+  the single core per question.** A browser calls it, so a token cannot guard it;
+  bounds take the token's place, and the first of them — one answer at a time,
+  claimed before the stream begins — is why a second question is a `409` rather
+  than a frame inside a `200`. The others bound the question length, the answer
+  length, the context, the fan-out, the container's memory and the request
+  timeout. See ADR 0009.
 - **`Reset` cannot remove a run's telemetry**, so a second run appends to a
   machine's charts. Discarding stored readings is a destructive write, which
   would need the ingest token, which a browser cannot present — so a destructive
@@ -307,3 +372,19 @@ silently would make the ranking quietly worse with nothing logged.
   paged.** Incidents return at most 100, predictions at most 200, and neither
   accepts a `limit` or `offset`. Fine at the current volume; pagination is what
   the first fleet large enough to need it will require.
+- **The Copilot's prose is written by a 1.5B model, and reads like it.** The
+  size is set by the host — 3.9 GB, no swap, 506 MiB already committed to the
+  LSTM and two encoders — not by preference, and a larger model was ruled out by
+  an OOM kill rather than by taste. The answers are plain and the reasoning is
+  thin; what the design guarantees is the *grounding*, not the eloquence.
+- **The grounding check catches invented numbers, not invented reasoning.** Every
+  number in an answer must appear in the evidence it was given, and one that does
+  not forces `FALLBACK`. A sentence that misreads true numbers passes. The
+  mitigation is structural rather than clever: the evidence blocks and the tool
+  activity are attached by the system, so a reader can always see what the model
+  was given and judge the prose against it.
+- **The Copilot's conversation is component state, not storage.** A reload loses
+  the transcript, and two readers asking the same question build two independent
+  conversations. PRD section 20.6's "conversation history" is the visible
+  transcript; persisting it needs a session and a retention rule, which is Phase
+  11's business alongside the authentication that would give it an owner.

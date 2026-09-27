@@ -6,6 +6,7 @@ The service is the torch service, so that is where its tests belong.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
@@ -65,6 +66,25 @@ class FakeEmbedder:
         return [[float(index)] + [0.0] * (self.dimensions - 1) for index, _ in enumerate(texts)]
 
 
+class FakeChat:
+    """A language model that writes what it is told, one word at a time."""
+
+    def __init__(self, answer: str = "Vibration is rising.") -> None:
+        self.answer = answer
+        self.seen: list[list[tuple[str, str]]] = []
+        self.max_tokens: list[int] = []
+
+    @property
+    def model_id(self) -> str:
+        return "fake-composer@test"
+
+    def stream(self, messages, *, max_tokens):
+        self.seen.append([(turn.role, turn.content) for turn in messages])
+        self.max_tokens.append(max_tokens)
+        for word in self.answer.split(" "):
+            yield f"{word} "
+
+
 class FakeReranker:
     """A reranker that scores by position, so ordering is visible."""
 
@@ -86,6 +106,7 @@ def an_app(
     scorer: FakeScorer | None = None,
     embedder: FakeEmbedder | None = None,
     reranker: FakeReranker | None = None,
+    chat_model: FakeChat | None = None,
 ) -> TestClient:
     """Build a client over an app with every model stubbed.
 
@@ -98,6 +119,7 @@ def an_app(
             scorer or FakeScorer(),
             embedder or FakeEmbedder(),
             reranker or FakeReranker(),
+            chat_model if chat_model is not None else FakeChat(),
         )
     )
 
@@ -125,6 +147,7 @@ def test_health_reports_the_loaded_models() -> None:
         "window": WINDOW,
         "embed_model": "fake-encoder@test",
         "rerank_model": "fake-cross-encoder@test",
+        "chat_model": "fake-composer@test",
     }
 
 
@@ -299,3 +322,80 @@ def test_an_over_long_machine_id_is_still_refused() -> None:
         response = client.post("/predict", json={"machine_id": "M" * 17, "readings": a_window()})
 
     assert response.status_code == 422
+
+
+def test_chat_streams_newline_delimited_json(client: TestClient) -> None:
+    """One complete object per line, and no frame grammar to get wrong.
+
+    This hop has exactly one consumer — the API — so the format is chosen for
+    machine parsing rather than for a browser. The API re-emits it as SSE,
+    because that is the browser's own vocabulary.
+    """
+    response = client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": "What should I inspect?"}]},
+    )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert [json.loads(line)["text"] for line in lines] == [
+        "Vibration ",
+        "is ",
+        "rising. ",
+    ]
+
+
+def test_chat_passes_every_turn_through_in_order() -> None:
+    """The system prompt is a message, not a string the caller concatenates."""
+    chat_model = FakeChat()
+    with an_app(chat_model=chat_model) as client:
+        client.post(
+            "/chat",
+            json={
+                "messages": [
+                    {"role": "system", "content": "Use only these findings."},
+                    {"role": "user", "content": "What should I inspect?"},
+                ],
+                "max_tokens": 120,
+            },
+        )
+
+    assert chat_model.seen == [
+        [
+            ("system", "Use only these findings."),
+            ("user", "What should I inspect?"),
+        ]
+    ]
+    assert chat_model.max_tokens == [120]
+
+
+def test_chat_refuses_an_empty_conversation(client: TestClient) -> None:
+    """Nothing to answer is a 422 at the schema, not an empty answer."""
+    response = client.post("/chat", json={"messages": []})
+
+    assert response.status_code == 422
+
+
+def test_chat_refuses_an_unknown_role(client: TestClient) -> None:
+    """The role reaches the model's chat template, so a typo is not tolerated."""
+    response = client.post("/chat", json={"messages": [{"role": "wizard", "content": "answer me"}]})
+
+    assert response.status_code == 422
+
+
+def test_chat_without_a_model_reports_that_rather_than_failing(
+    environment: None,
+) -> None:
+    """A deployment with no chat model runs, and says so at `/chat`.
+
+    The alternative — refusing to start — would take prediction and retrieval
+    down with it on a box that has no swap, for the sake of the one model this
+    service can do without.
+    """
+    with TestClient(create_app(FakeScorer(), FakeEmbedder(), FakeReranker(), None)) as client:
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        health = client.get("/health").json()
+
+    assert response.status_code == 503
+    assert "INFERENCE_CHAT_MODEL" in response.text
+    assert health["chat_model"] is None

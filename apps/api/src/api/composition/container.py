@@ -8,13 +8,14 @@ with no application or presentation file changing.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from api.application.use_cases import (
+    AskCopilot,
     GetMachineDetail,
     GetPredictionHistory,
     GetTelemetryHistory,
@@ -36,10 +37,12 @@ from api.application.use_cases import (
 )
 from api.domain.entities.prediction import PREDICTION_WINDOW_READINGS
 from api.domain.errors import (
+    ChatUnavailableError,
     PredictionUnavailableError,
     RetrievalUnavailableError,
     SimulationUnavailableError,
 )
+from api.domain.ports.chat import ChatMessage, ChatModel
 from api.domain.ports.clock import Clock
 from api.domain.ports.embedder import Embedder
 from api.domain.ports.events import EventSubscriber
@@ -52,6 +55,7 @@ from api.domain.services.incident_policy import DefaultIncidentPolicy
 from api.domain.services.risk_level_classifier import RiskLevelClassifier
 from api.domain.value_objects.risk_thresholds import RiskThresholds
 from api.domain.value_objects.sensor_reading import SensorReading
+from api.infrastructure.chat import HttpChat
 from api.infrastructure.config import Settings
 from api.infrastructure.embedding import HttpEmbedder
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
@@ -102,6 +106,7 @@ class Container:
     ingest_knowledge_document: IngestKnowledgeDocument
     search_maintenance_knowledge: SearchMaintenanceKnowledge
     set_active_document_version: SetActiveDocumentVersion
+    ask_copilot: AskCopilot
 
     #: Held for its `aclose`, which shuts down the HTTP client the simulation
     #: controller borrows. Present on both wirings, so the type is not optional
@@ -159,6 +164,11 @@ def build_container(settings: Settings) -> Container:
             model_id=settings.knowledge_embedding_model,
         ),
         reranker=HttpReranker(base_url=settings.inference_service_url, client=inference_client),
+        chat_model=HttpChat(
+            base_url=settings.inference_service_url,
+            client=inference_client,
+            model_id=settings.copilot_model,
+        ),
         engine=engine,
         clock=SystemClock(),
         simulation_controller=HttpSimulationController(
@@ -177,6 +187,7 @@ def build_in_memory_container(
     simulation_controller: SimulationController | None = None,
     embedder: Embedder | None = None,
     reranker: Reranker | None = None,
+    chat_model: ChatModel | None = None,
 ) -> Container:
     """Wire the application against an in-memory store.
 
@@ -195,6 +206,7 @@ def build_in_memory_container(
         predictor=predictor or UnavailablePredictor(),
         embedder=embedder or UnavailableEmbedder(),
         reranker=reranker or UnavailableReranker(),
+        chat_model=chat_model or UnavailableChat(),
         engine=None,
         clock=clock or SystemClock(),
         # No service to call in the in-memory wiring, so a run cannot be
@@ -222,6 +234,7 @@ def _assemble(
     engine: AsyncEngine | None,
     clock: Clock,
     simulation_controller: SimulationController,
+    chat_model: ChatModel,
     inference_client: httpx.AsyncClient | None = None,
 ) -> Container:
     """Build the container from already-chosen adapters."""
@@ -231,20 +244,48 @@ def _assemble(
     # fires.
     broadcaster = InProcessEventBroadcaster()
 
+    # Held as locals because the Copilot wraps the same instances the container
+    # exposes. A second copy of each would be stateless and harmless, and it
+    # would also be a second thing to keep in step with the container.
+    list_machines = ListMachines(unit_of_work_factory=unit_of_work_factory)
+    get_machine_detail = GetMachineDetail(unit_of_work_factory=unit_of_work_factory)
+    get_telemetry_history = GetTelemetryHistory(
+        unit_of_work_factory=unit_of_work_factory,
+        clock=clock,
+    )
+    get_prediction_history = GetPredictionHistory(unit_of_work_factory=unit_of_work_factory)
+    list_incidents = ListIncidents(unit_of_work_factory=unit_of_work_factory)
+    search_knowledge = SearchMaintenanceKnowledge(
+        unit_of_work_factory=unit_of_work_factory,
+        embedder=embedder,
+        reranker=reranker,
+        minimum_score=settings.knowledge_minimum_score,
+    )
+
     return Container(
         settings=settings,
         unit_of_work_factory=unit_of_work_factory,
         clock=clock,
         health_probe=health_probe,
         event_subscriber=broadcaster,
-        list_machines=ListMachines(unit_of_work_factory=unit_of_work_factory),
-        get_machine_detail=GetMachineDetail(unit_of_work_factory=unit_of_work_factory),
-        get_telemetry_history=GetTelemetryHistory(
-            unit_of_work_factory=unit_of_work_factory,
-            clock=clock,
+        list_machines=list_machines,
+        get_machine_detail=get_machine_detail,
+        get_telemetry_history=get_telemetry_history,
+        get_prediction_history=get_prediction_history,
+        list_incidents=list_incidents,
+        ask_copilot=AskCopilot(
+            list_machines=list_machines,
+            get_machine_detail=get_machine_detail,
+            get_telemetry_history=get_telemetry_history,
+            get_prediction_history=get_prediction_history,
+            list_incidents=list_incidents,
+            search_knowledge=search_knowledge,
+            chat=chat_model,
+            # Read here rather than defaulted in the use case, so the value the
+            # deployment sets is the value that bounds the box. A setting nothing
+            # reads is a setting nobody checks.
+            max_concurrent=settings.copilot_max_concurrent_questions,
         ),
-        get_prediction_history=GetPredictionHistory(unit_of_work_factory=unit_of_work_factory),
-        list_incidents=ListIncidents(unit_of_work_factory=unit_of_work_factory),
         record_prediction=RecordPrediction(
             unit_of_work_factory=unit_of_work_factory,
             predictor=predictor,
@@ -304,12 +345,7 @@ def _assemble(
             embedder=embedder,
             clock=clock,
         ),
-        search_maintenance_knowledge=SearchMaintenanceKnowledge(
-            unit_of_work_factory=unit_of_work_factory,
-            embedder=embedder,
-            reranker=reranker,
-            minimum_score=settings.knowledge_minimum_score,
-        ),
+        search_maintenance_knowledge=search_knowledge,
         set_active_document_version=SetActiveDocumentVersion(
             unit_of_work_factory=unit_of_work_factory,
         ),
@@ -419,4 +455,54 @@ class UnavailableReranker:
         raise RetrievalUnavailableError(
             "No inference service is configured, so candidates cannot be reranked. "
             "Set INFERENCE_SERVICE_URL."
+        )
+
+
+class UnavailableChat:
+    """A language model that always refuses, for wiring with no model behind it.
+
+    Refusing rather than answering from a template: the Copilot's whole claim is
+    that its prose came from evidence, and a placeholder that wrote something
+    anyway would be a fabricated answer wearing the product's clothes. The
+    caller gets an outage, which is what this is.
+    """
+
+    @property
+    def model_id(self) -> str:
+        """The identity a configured deployment would report."""
+        return "unavailable"
+
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Return an iterator whose first step refuses."""
+        del messages, max_tokens
+        return _RefusingWriter()
+
+
+class _RefusingWriter:
+    """An async iterator whose first step refuses.
+
+    An iterator rather than a generator, because a generator that raises before
+    its first `yield` has a body mypy reports as unreachable -- and the
+    alternative, `if False: yield`, is a trick. This says the same thing in
+    three methods: iterating it fails, in the place a caller would expect a
+    failure from a real adapter.
+
+    Raises:
+        ChatUnavailableError: on the first step, always.
+    """
+
+    def __aiter__(self) -> _RefusingWriter:
+        """Return self: this iterator is its own iterable."""
+        return self
+
+    async def __anext__(self) -> str:
+        """Refuse."""
+        raise ChatUnavailableError(
+            "No language model is configured, so the Copilot cannot write an answer. "
+            "Set INFERENCE_CHAT_MODEL on the model service."
         )

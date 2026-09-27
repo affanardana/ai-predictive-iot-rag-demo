@@ -50,6 +50,21 @@ RUN pip install --no-cache-dir \
         "httpx>=0.28" \
         "sentence-transformers>=3.3"
 
+# The Copilot's inference runtime, from the project's own CPU wheel index.
+#
+# `pip install llama-cpp-python` with no index resolves to the PyPI source
+# distribution, which compiles against libllama with CMake at image build time
+# -- minutes of compiler on a one-core box, and a toolchain that has to be in
+# the image to do it. This index publishes a `py3-none-manylinux` wheel built
+# against CPU BLAS, so the layer is a download.
+#
+# Pinned, and the pin is load-bearing: the wheel is an ABI match against one
+# llama.cpp tag, and this project's numbers (7.8 tokens/second decode, 1724 MiB
+# peak RSS) were measured against 0.3.35. A later version can change both.
+RUN pip install --no-cache-dir \
+        --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
+        "llama-cpp-python==0.3.35"
+
 # The two retrieval models, fetched at build time and baked in.
 #
 # Baked rather than pulled at first use, for two reasons. The service is on a

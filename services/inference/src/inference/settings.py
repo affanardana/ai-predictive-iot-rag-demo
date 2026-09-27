@@ -13,6 +13,13 @@ EMBED_REVISION_VARIABLE = "INFERENCE_EMBED_REVISION"
 RERANK_MODEL_VARIABLE = "INFERENCE_RERANK_MODEL"
 RERANK_REVISION_VARIABLE = "INFERENCE_RERANK_REVISION"
 MODEL_CACHE_VARIABLE = "INFERENCE_MODEL_CACHE"
+CHAT_MODEL_VARIABLE = "INFERENCE_CHAT_MODEL"
+CHAT_CONTEXT_VARIABLE = "INFERENCE_CHAT_CONTEXT"
+
+#: The Copilot's context window. 2048 rather than 4096 because the KV cache is
+#: what stays resident between requests, and the prompt this service is sent is
+#: a few hundred tokens: findings, one question, and room for an answer.
+DEFAULT_CHAT_CONTEXT = 2048
 
 #: The retrieval models. MiniLM rather than the BGE family `MASTERPLAN.md` §5
 #: names: that section is a direction list, not one of PRD §25's constraints,
@@ -47,6 +54,27 @@ class Settings:
     #: so the image sets this to a writable path.
     model_cache: Path | None = None
 
+    #: The Copilot's language model, as a GGUF file. **Optional, and the only
+    #: model here that is.** It is the hungriest and the least essential, and a
+    #: service that refused to start without it would take prediction and
+    #: retrieval down with it on a box that has no swap. Unset means the service
+    #: runs and `/chat` reports that no model is configured; set-but-missing is
+    #: a startup failure, because a configured model that is not there is a
+    #: deployment mistake rather than a choice.
+    chat_model: Path | None = None
+    chat_context: int = DEFAULT_CHAT_CONTEXT
+
+    @property
+    def chat_model_id(self) -> str:
+        """Identity of the chat model, as its file name.
+
+        Filename rather than a hub revision: these weights are placed by hand
+        beside the checkpoint, so the name the operator chose is the only
+        identity there is -- and it is the one they can match against what they
+        downloaded.
+        """
+        return self.chat_model.name if self.chat_model is not None else "none"
+
     @classmethod
     def from_environment(cls) -> Settings:
         """Read the checkpoint and artifact paths from the environment.
@@ -70,9 +98,17 @@ class Settings:
                 "normalization.json is missing."
             )
         cache = os.environ.get(MODEL_CACHE_VARIABLE)
+        chat = os.environ.get(CHAT_MODEL_VARIABLE)
+        if chat and not Path(chat).exists():
+            raise ConfigurationError(
+                f"{CHAT_MODEL_VARIABLE} names '{chat}', which is not there. Unset it "
+                "to run without the Copilot's model."
+            )
         return cls(
             checkpoint=Path(checkpoint),
             artifact_dir=Path(artifact_dir),
+            chat_model=Path(chat) if chat else None,
+            chat_context=int(os.environ.get(CHAT_CONTEXT_VARIABLE, DEFAULT_CHAT_CONTEXT)),
             embed_model=os.environ.get(EMBED_MODEL_VARIABLE, DEFAULT_EMBED_MODEL),
             embed_revision=os.environ.get(EMBED_REVISION_VARIABLE, DEFAULT_REVISION),
             rerank_model=os.environ.get(RERANK_MODEL_VARIABLE, DEFAULT_RERANK_MODEL),

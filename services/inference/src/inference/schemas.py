@@ -67,6 +67,22 @@ class PredictResponse(BaseModel):
     model_version: str
 
 
+class ChatTurn(BaseModel):
+    """One message of the conversation, as the API sends it."""
+
+    role: str = Field(pattern="^(system|user|assistant)$")
+    content: str = Field(min_length=1)
+
+
+class ChatRequest(BaseModel):
+    """What to answer, and how long the answer may be."""
+
+    messages: list[ChatTurn] = Field(min_length=1)
+    #: Bounded here as well as at the API: the answer's length is the decode
+    #: cost, and on one core that is most of what a reader waits for.
+    max_tokens: int = Field(default=160, ge=1, le=512)
+
+
 class EmbedRequest(BaseModel):
     """Texts to embed, in the order the caller wants them back."""
 

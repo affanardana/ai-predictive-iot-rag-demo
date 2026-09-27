@@ -200,6 +200,14 @@ ignore_missing_imports = true
 module = ["sentence_transformers", "sentence_transformers.*"]
 ignore_missing_imports = true
 
+# llama.cpp is a C++ runtime with Python bindings, installed only in the
+# inference image (and, for a benchmark, in a throwaway container). It is
+# absent from the default environment like torch and paho, so the same rule
+# applies: mypy has to pass without it.
+[[tool.mypy.overrides]]
+module = ["llama_cpp", "llama_cpp.*"]
+ignore_missing_imports = true
+
 # ===========================================================================
 # pytest
 # ===========================================================================
@@ -231,11 +239,15 @@ asyncio_default_fixture_loop_scope = "function"
 # torch is not installed, and would fail rather than deselect. `mqtt` has the
 # same problem for the same reason: its tests need a broker and the simulator's
 # `mqtt` extra, neither of which the offline job has.
-addopts = "-m 'not postgres and not torch and not mqtt' --strict-markers --strict-config"
+addopts = "-m 'not postgres and not torch and not mqtt and not llm' --strict-markers --strict-config"
 markers = [
     "postgres: requires a live PostgreSQL database; set TEST_DATABASE_URL to run",
     "torch: requires the training extra (`uv sync --all-packages --all-extras`)",
     "mqtt: requires a live broker; set MQTT_BROKER_URL and install the `mqtt` extra",
+    # Named in `addopts` for the same reason as the three above: `llama_cpp` and
+    # a 940 MB GGUF exist only inside the inference image, so a default run must
+    # deselect these rather than collect them and fail on the import.
+    "llm: requires the Copilot's GGUF and `llama-cpp-python`; runs in the inference image",
 ]
 log_cli_level = "WARNING"
 

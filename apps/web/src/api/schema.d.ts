@@ -4,6 +4,37 @@
  */
 
 export interface paths {
+    "/api/v1/copilot/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the Copilot a question
+         * @description Answer a maintenance question, streaming the work as it happens.
+         *
+         *     **Unguarded**, like the other browser-facing routes, and bounded instead —
+         *     see ADR 0009. The bound that matters runs first: the single answer slot is
+         *     claimed *before* this returns a response, because a 409 that arrives as a
+         *     frame inside a 200 is no longer a status code a client can act on.
+         *
+         *     The failure modes are split deliberately. A refusal (the evidence does not
+         *     support an answer) and a fallback (the prose failed its grounding check) are
+         *     200s carrying a verdict, because the request was fine and the system is
+         *     answering honestly. A chat outage or a busy Copilot are real statuses,
+         *     because those are about the deployment rather than about the question.
+         */
+        post: operations["chat_api_v1_copilot_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -534,6 +565,16 @@ export interface components {
          */
         Aggregation: "RAW" | "MEAN" | "MIN" | "MAX";
         /**
+         * AskRequest
+         * @description A maintenance question.
+         */
+        AskRequest: {
+            /** History */
+            history?: components["schemas"]["ConversationTurn"][];
+            /** Question */
+            question: string;
+        };
+        /**
          * CitationSchema
          * @description Where a passage came from: PRD section 18's four fields, and a label.
          */
@@ -550,6 +591,16 @@ export interface components {
             title: string;
             /** Version */
             version: string;
+        };
+        /**
+         * ConversationTurn
+         * @description One earlier turn, as the browser remembers it.
+         */
+        ConversationTurn: {
+            /** Content */
+            content: string;
+            /** Role */
+            role: string;
         };
         /**
          * DocumentCategory
@@ -1224,6 +1275,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    chat_api_v1_copilot_chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     stream_events_api_v1_events_get: {
         parameters: {
             query?: never;

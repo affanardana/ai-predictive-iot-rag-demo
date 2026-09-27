@@ -27,6 +27,28 @@ COMPOSE_DIR = Path(__file__).resolve().parents[5] / "infra" / "compose"
 #: Flags that start more than one server process.
 WORKER_FLAGS = re.compile(r"(?:^|\s)(?:--workers|-w)(?:\s|=)")
 
+#: A compose value that interpolates a variable, and its default.
+INTERPOLATION = re.compile(r"\$\{(?P<name>[A-Z_]+)(?::-(?P<default>[^}]*))?\}")
+
+#: Peak resident memory of the two jobs in the inference container, measured on
+#: the deployment host with `docker stats` during a real request: the LSTM and
+#: the two sentence encoders, and the Copilot's model with its KV cache.
+RETRIEVAL_FOOTPRINT_MIB = 506
+CHAT_FOOTPRINT_MIB = 1724
+
+
+def _chat_model_file(value: str) -> str:
+    """Return the file name a compose value resolves to.
+
+    The same expression for both sides of the assertion, because that is the
+    property under test: neither service writes the name itself, they both read
+    it from the one variable.
+    """
+    match = INTERPOLATION.search(value)
+    assert match is not None, f"{value!r} is hard-coded rather than shared"
+    assert match.group("name") == "CHAT_MODEL_FILE"
+    return match.group("default")
+
 
 @pytest.fixture(scope="module")
 def compose() -> dict[str, object]:
@@ -97,6 +119,65 @@ def test_the_api_container_does_not_sync_the_whole_workspace() -> None:
     carry `sys_platform == 'linux'` markers and are skipped there.
     """
     assert not any("uv sync" in line for line in _instructions(_dockerfile_text("Dockerfile.api")))
+
+
+# --- The inference container -------------------------------------------------
+
+
+def test_the_copilot_weights_are_not_baked_into_the_image() -> None:
+    """The GGUF is mounted, not fetched during the build.
+
+    Baked in, it would be a 940 MB download on a one-core host every time
+    anything in the image changed -- and swapping models would mean rebuilding
+    rather than replacing a file. The two sentence encoders *are* fetched at
+    build time, and deliberately: they are small, they are pinned to a revision
+    the corpus records, and they are not meant to be swapped by hand.
+    """
+    instructions = _instructions(_dockerfile_text("Dockerfile.inference"))
+
+    assert not any(".gguf" in line.lower() for line in instructions)
+
+
+def test_the_copilot_model_is_named_once(
+    services: dict[str, dict[str, object]],
+) -> None:
+    """One variable, two readers, so the two services cannot disagree.
+
+    The API reports `COPILOT_MODEL` as the model that wrote each answer; the
+    inference service loads whatever `INFERENCE_CHAT_MODEL` points at, and
+    reports its file name. Two independent variables would drift, and the drift
+    is invisible: every answer would name a model that did not write it, which
+    is worse than naming none, because it reads as provenance.
+
+    The file's name is also pinned literally. It is what `Settings.chat_model_id`
+    returns and what the page prints, so a rename here is a rename of something
+    a reader sees.
+    """
+    api = services["api"]["environment"]
+    inference = services["inference"]["environment"]
+    assert isinstance(api, dict) and isinstance(inference, dict)
+
+    path = str(inference["INFERENCE_CHAT_MODEL"])
+    assert path.startswith("/model/chat/"), "the weights belong in the read-only model mount"
+    assert _chat_model_file(path) == _chat_model_file(str(api["COPILOT_MODEL"]))
+    assert _chat_model_file(path) == "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+
+def test_the_inference_limit_fits_the_copilot_model(
+    services: dict[str, dict[str, object]],
+) -> None:
+    """The one bound on this host whose failure is a kill rather than a slowdown.
+
+    There is no swap here. A container that exceeds its limit is not paged out,
+    it is OOM-killed -- most likely mid-answer, having already spent twenty
+    seconds. So the limit is asserted against the measured footprint of both
+    jobs the service now does, rather than being left as a number someone
+    lowers again when the box looks tight.
+    """
+    limit = str(services["inference"]["mem_limit"])
+    assert limit.endswith("m"), f"expected a megabyte limit, got {limit!r}"
+
+    assert int(limit.removesuffix("m")) >= RETRIEVAL_FOOTPRINT_MIB + CHAT_FOOTPRINT_MIB
 
 
 # --- The simulator container -------------------------------------------------
