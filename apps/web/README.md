@@ -64,8 +64,16 @@ frontend is a red build rather than an empty table in production.
 | `/machines` | The machine list |
 | `/machines/:id` | Current state, telemetry, prediction history, incidents |
 | `/incidents` | Incident list, with acknowledge / resolve / dismiss |
-| `/simulation` | Placeholder — Phase 8 owns simulation control |
+| `/simulation` | Run list, the start form, and per-run stop / reset |
+| `/knowledge` | Ask the maintenance corpus a question, and see the passages, versions, sections and pages behind the answer |
 | `/copilot` | Placeholder — Phase 10 owns the Copilot |
+
+`/knowledge` shows the retrieval layer on its own, below the Copilot that will
+sit on it. Two of its states are the point of the page rather than decoration:
+**the documentation does not cover this** (a 200 with `sufficient: false`) and
+**the retrieval service is not answering** (a 503). They are different claims —
+one about the corpus, one about the deployment — and a page that rendered both
+as an empty list would tell a reader a procedure does not exist when it may.
 
 ## How live updates work
 

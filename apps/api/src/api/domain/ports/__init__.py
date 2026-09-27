@@ -8,6 +8,7 @@ Every method is `async`. That choice is recorded in
 application-layer signature and is therefore a one-way door.
 """
 
+from api.domain.ports.chat import ChatMessage, ChatModel, ChatRole
 from api.domain.ports.clock import Clock
 from api.domain.ports.embedder import Embedder
 from api.domain.ports.events import (
@@ -32,6 +33,9 @@ from api.domain.ports.reranker import Reranker, RerankResult
 from api.domain.ports.unit_of_work import UnitOfWork, UnitOfWorkFactory
 
 __all__ = [
+    "ChatMessage",
+    "ChatModel",
+    "ChatRole",
     "Clock",
     "Embedder",
     "EventKind",

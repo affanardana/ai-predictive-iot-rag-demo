@@ -32,7 +32,8 @@ beside the code they deploy rather than here, because they are application code:
 
 ```text
 VPS (Docker Compose)     Caddy · API · model service · simulator · n8n
-Supabase                 PostgreSQL
+                         ingest — profile-gated, run by hand
+Supabase                 PostgreSQL, including the pgvector corpus
 broker.emqx.io           MQTT
 Vercel                   the web app (not yet deployed)
 ```
@@ -41,6 +42,12 @@ The simulator joined this list in Phase 8, and its absence before that was a
 requirement the project had been failing rather than a gap in this diagram:
 `PRD.md` AC-010 requires the demonstration to run without a locally running
 simulator, and both runbooks used to instruct one. See `../docs/adr/0008`.
+
+`ingest` joined it in Phase 9, for the same reason and by the same principle:
+parsing the corpus is a job, not a service, and running it from a laptop would
+have made the demonstration depend on one — the constraint Phase 8 had just
+finished satisfying for the simulator. It is behind a profile so that
+`docker compose up -d` never starts it; `compose/README.md` has the command.
 
 Migrations are applied from a developer machine rather than from a container —
 a batch operation with one writer, so a cold start must not race another replica

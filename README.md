@@ -10,6 +10,7 @@ maintenance procedures, distinguishing what was observed, what was predicted,
 and what is documented — built with FastAPI, React, PyTorch, PostgreSQL and
 Supabase.
 
-> Early development: the backend, database, and telemetry simulator are in
-> place. The model, dashboard, and Copilot are not yet built, and all telemetry
-> and documentation are synthetic demonstration material.
+> In development: the backend, database, telemetry simulator, predictive model,
+> dashboard and maintenance-document retrieval are in place. The Copilot that
+> answers questions over them is not yet built. All telemetry and documentation
+> are synthetic demonstration material.

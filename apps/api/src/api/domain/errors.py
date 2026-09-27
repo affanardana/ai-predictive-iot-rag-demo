@@ -209,6 +209,31 @@ class EmbeddingModelMismatchError(DomainError):
         )
 
 
+class ChatUnavailableError(DomainError):
+    """The Copilot's language model could not be reached.
+
+    A dependency outage rather than a bad question: the request was well formed,
+    the evidence is in hand, and the service that would write the answer did not
+    answer. Distinct from `RetrievalUnavailableError` so a reader is told which
+    of two services is out -- the page says different things for each.
+    """
+
+
+class ChatBusyError(DomainError):
+    """Another answer is being written, and this box writes one at a time.
+
+    A conflict rather than an outage, and deliberately not a queue: on one core
+    a second question would halve the speed of the first and leave two readers
+    waiting twice as long. Saying so is more useful than hiding the wait.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The Copilot answers one question at a time, and it is writing one now. "
+            "Try again in a few seconds."
+        )
+
+
 class ChunkTooLongError(DomainError):
     """A chunk is longer than the embedding model will read.
 
