@@ -202,13 +202,7 @@ class AskCopilot:
                     await events.tool(nothing)
                 continue
             found.append(result)
-            await events.tool(
-                ToolCall(
-                    tool=tool,
-                    summary=result.shown,
-                    evidence_count=len(result.evidence),
-                )
-            )
+            await events.tool(result.call)
 
         refusal = self._refusal(plan, found)
         if refusal is not None:
@@ -381,6 +375,18 @@ class AskCopilot:
             f"recorded {latest.predicted_at:%Y-%m-%d %H:%M} by model "
             f"{latest.model_version}."
         )
+        if len(history) > 1:
+            # The movement, which is the one thing this tool can say that the
+            # current-state tool cannot -- and the closest thing to a trend when
+            # a machine's telemetry is older than the window. Without it the two
+            # tools report the same number in two sentences, and the reader sees
+            # the same `PREDICTED` line twice.
+            earliest = history[-1]
+            statement += (
+                f" It is the newest of {len(history)} on record; the earliest, "
+                f"{earliest.predicted_at:%Y-%m-%d %H:%M}, was "
+                f"{earliest.probability.value:g}."
+            )
         return ToolResult(
             tool=CopilotTool.PREDICTION,
             summary=statement,
@@ -518,6 +524,11 @@ def _messages(
         "Use only the findings below. Do not state any number that is not in them. "
         "Do not describe a procedure that is not in a DOCUMENTED finding. "
         "Do not state that a failure will happen or that a machine is safe. "
+        # Added after the first live answer described a measured 1424 rpm as
+        # "low" -- a judgement no finding made, and one the grounding check
+        # cannot catch because the number itself was real. A 1.5B model follows
+        # an explicit prohibition far better than an implied one.
+        "Do not describe a value as high, low, rising or falling unless a finding does. "
         "If the findings do not answer the question, say so plainly."
     )
     numbered = "\n".join(f"[{index}] {finding}" for index, finding in enumerate(findings, start=1))
@@ -561,10 +572,7 @@ def _citations_of(found: Sequence[ToolResult]) -> tuple[Citation, ...]:
 
 def _calls_of(found: Sequence[ToolResult]) -> tuple[ToolCall, ...]:
     """The activity trail, in the order the tools ran."""
-    return tuple(
-        ToolCall(tool=result.tool, summary=result.summary, evidence_count=len(result.evidence))
-        for result in found
-    )
+    return tuple(result.call for result in found)
 
 
 def _resolution(series: TelemetrySeries) -> str:

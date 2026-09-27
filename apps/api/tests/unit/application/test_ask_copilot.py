@@ -225,6 +225,10 @@ async def test_the_prompt_carries_the_evidence_and_the_question(
     assert "[1]" in prompt
     # The instruction that makes the grounding check possible in the first place.
     assert "Do not state any number that is not in them" in chat.calls[0][0].content
+    # And the one it cannot enforce: the first live answer called a measured
+    # 1424 rpm "low", which is an invented judgement over a real number. The
+    # prompt is the only place that can be forbidden, so it is asserted here.
+    assert "Do not describe a value as high, low, rising or falling" in chat.calls[0][0].content
 
 
 async def test_activity_is_reported_as_it_happens(
@@ -285,6 +289,38 @@ async def test_the_answer_carries_the_window_it_used(
     trend_calls = [call for call in answer.tool_calls if call.tool is CopilotTool.TREND]
     assert trend_calls
     assert "1h" in trend_calls[0].summary
+
+
+async def test_the_prediction_tool_reports_movement_not_a_repeat(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    chat: StubChat,
+) -> None:
+    """Two tools, two findings.
+
+    The current-state tool already reports the latest probability, so a
+    prediction tool that reports the same number in a different sentence puts
+    the same `PREDICTED` line on the page twice and adds nothing. What it can
+    say instead is where the number came from -- which is also the closest
+    thing to a trend available when a machine's telemetry is older than the
+    window, and the question asked is usually *"why is it becoming risky"*.
+    """
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        for index, probability in enumerate((0.21, 0.44, 0.81)):
+            await uow.predictions.add(
+                make_prediction(
+                    machine_id="M003",
+                    prediction_id=f"pred-{index}",
+                    probability=probability,
+                )
+            )
+
+    answer = await a_copilot(uow_factory, chat).execute("Why is M003 risky?")
+
+    predicted = [item.value for item in answer.evidence if item.kind is EvidenceKind.PREDICTED]
+    assert len(predicted) == 2
+    assert "newest of 3" in predicted[1]
+    assert "0.21" in predicted[1]
 
 
 async def test_no_readings_still_answers_from_what_is_known(
@@ -355,11 +391,18 @@ async def test_the_activity_line_for_the_corpus_names_the_documents(
     await seed_machine(uow_factory)
     sink = RecordingSink()
 
-    await a_copilot(uow_factory, chat).execute(QUESTION, sink=sink)
+    answer = await a_copilot(uow_factory, chat).execute(QUESTION, sink=sink)
 
-    knowledge = next(call for call in sink.calls if call.tool is CopilotTool.KNOWLEDGE)
-    assert BEARING not in knowledge.summary
-    assert knowledge.summary.endswith(".")
-    assert len(knowledge.summary) < 200
+    # Both renderings of the trail, because there are two and they drifted
+    # once already: the frame streamed as the tool finished, and the
+    # `tool_calls` on the finished answer, which is what the page renders in
+    # the transcript. The first was fixed and the second kept printing the
+    # passages, which is how this assertion came to exist.
+    streamed = next(call for call in sink.calls if call.tool is CopilotTool.KNOWLEDGE)
+    recorded = next(call for call in answer.tool_calls if call.tool is CopilotTool.KNOWLEDGE)
+    assert streamed == recorded
+    assert BEARING not in recorded.summary
+    assert recorded.summary.endswith(".")
+    assert len(recorded.summary) < 200
     # And the prompt still carries the passage, or the answer could not cite it.
     assert BEARING in chat.calls[0][-1].content

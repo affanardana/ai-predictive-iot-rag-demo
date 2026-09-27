@@ -109,6 +109,18 @@ class ToolResult:
         """The line the reader sees for this tool in the activity trail."""
         return self.display or self.summary
 
+    @property
+    def call(self) -> ToolCall:
+        """This result as one line of the activity trail.
+
+        Built here rather than at each call site. There are two -- the frame
+        streamed as the tool finishes, and the `tool_calls` on the finished
+        answer -- and they are the same line. Building it twice is not
+        hypothetical: the retrieval summary reached the page through the second
+        one after the first had been fixed.
+        """
+        return ToolCall(tool=self.tool, summary=self.shown, evidence_count=len(self.evidence))
+
 
 @dataclass(frozen=True, slots=True)
 class ToolCall:
