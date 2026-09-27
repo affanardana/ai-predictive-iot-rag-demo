@@ -324,6 +324,12 @@ A good answer has all four kinds of evidence in it — a reading, a prediction, 
 trend, and a procedure with its document, section and page — and takes about
 twenty seconds, most of which is spent watching the sources being read.
 
+**Start a simulation first if the machine's data is stale.** The default window
+is five hours; if M003 last reported yesterday, the telemetry and trend tools
+find nothing and say so in the activity trail (`Nothing recorded for M003 in the
+5h window.`) rather than inventing a movement. The answer is still honest, but
+it is answering a smaller question than the one asked.
+
 Then the control, which is the half that matters: ask something the documentation
 does not cover.
 

@@ -44,11 +44,16 @@ class RecordingSink:
     """An event sink that keeps what it was told."""
 
     def __init__(self) -> None:
-        self.tools: list[CopilotTool] = []
+        self.calls: list[ToolCall] = []
         self.tokens: list[str] = []
 
+    @property
+    def tools(self) -> list[CopilotTool]:
+        """Just the tools, for the tests that only care about the order."""
+        return [call.tool for call in self.calls]
+
     async def tool(self, call: ToolCall) -> None:
-        self.tools.append(call.tool)
+        self.calls.append(call)
 
     async def token(self, text: str) -> None:
         self.tokens.append(text)
@@ -297,3 +302,64 @@ async def test_no_readings_still_answers_from_what_is_known(
 
     assert answer.verdict is AnswerVerdict.ANSWERED
     assert any(item.kind is EvidenceKind.OBSERVED for item in answer.evidence)
+
+
+async def test_an_empty_window_is_reported_rather_than_silently_skipped(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    chat: StubChat,
+) -> None:
+    """A tool that found nothing still gets a line in the activity trail.
+
+    This is the deployed case rather than a contrived one: a machine whose last
+    reading is a day old has nothing in the default five-hour window, so the
+    trend the question asks for cannot be produced. Without a line, a reader
+    cannot tell whether the Copilot looked and found nothing or never looked --
+    and an answer to *"why is it becoming risky"* with no trend in it reads as
+    an oversight rather than as an absence of data.
+
+    It carries no evidence, so it cannot change what the answer says. Asserted
+    both ways, because that is the property that makes the line cheap.
+    """
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        await uow.predictions.add(
+            make_prediction(machine_id="M003", probability=0.4, predicted_at=DEFAULT_NOW)
+        )
+    sink = RecordingSink()
+
+    answer = await a_copilot(uow_factory, chat).execute("Why is M003 becoming risky?", sink=sink)
+
+    empty = [call for call in sink.calls if call.evidence_count == 0]
+    assert {call.tool for call in empty} == {CopilotTool.TELEMETRY, CopilotTool.TREND}
+    assert all("5h" in call.summary for call in empty)
+    # The answer's own list is the tools that produced findings. A line saying
+    # a tool found nothing is progress, not evidence, and must not appear there
+    # -- it would otherwise be counted when the refusal is decided.
+    assert {call.tool for call in answer.tool_calls} == {
+        call.tool for call in sink.calls if call.evidence_count > 0
+    }
+    assert not any("nothing" in item.value.casefold() for item in answer.evidence)
+
+
+async def test_the_activity_line_for_the_corpus_names_the_documents(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    chat: StubChat,
+) -> None:
+    """The model reads the passages; the trail gets a line.
+
+    Two readers, two renderings. Printing the retrieval summary in the trail
+    would put a thousand characters of procedure where one line belongs -- the
+    passages are what the *page* shows, in the evidence blocks, with their
+    citations.
+    """
+    await seed_machine(uow_factory)
+    sink = RecordingSink()
+
+    await a_copilot(uow_factory, chat).execute(QUESTION, sink=sink)
+
+    knowledge = next(call for call in sink.calls if call.tool is CopilotTool.KNOWLEDGE)
+    assert BEARING not in knowledge.summary
+    assert knowledge.summary.endswith(".")
+    assert len(knowledge.summary) < 200
+    # And the prompt still carries the passage, or the answer could not cite it.
+    assert BEARING in chat.calls[0][-1].content

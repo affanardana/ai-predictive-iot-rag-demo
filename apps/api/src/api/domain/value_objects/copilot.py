@@ -91,11 +91,23 @@ class ToolResult:
     #: finding's source is a rendered label, and recovering the four citation
     #: fields from it would put the citation format in a second place.
     citations: tuple[Citation, ...] = ()
+    #: What the activity trail shows, when it is not `summary`.
+    #:
+    #: The retrieval tool is why this exists: its summary is the passages
+    #: themselves, because the model has to read them, and printing that in a
+    #: one-line trail is a paragraph where a line belongs. Only set it when the
+    #: two genuinely differ.
+    display: str = ""
 
     def __post_init__(self) -> None:
         """Validate that the result says something."""
         if not self.summary.strip():
             raise ValueError(f"ToolResult for {self.tool} must carry a summary.")
+
+    @property
+    def shown(self) -> str:
+        """The line the reader sees for this tool in the activity trail."""
+        return self.display or self.summary
 
 
 @dataclass(frozen=True, slots=True)

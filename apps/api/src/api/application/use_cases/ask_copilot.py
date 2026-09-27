@@ -190,12 +190,22 @@ class AskCopilot:
                     reason=UNKNOWN_MACHINE,
                 )
             if result is None:
+                # A tool that found nothing is still worth reporting, for the
+                # two that read a window. Without it, an answer written from a
+                # stale machine's single reading gives no sign that the trend
+                # was looked for and missing -- and "why is it *becoming* risky"
+                # answered without a trend reads as an oversight rather than as
+                # an absence of data. It contributes no evidence, so it cannot
+                # change what the answer says.
+                nothing = _nothing_found(tool, plan)
+                if nothing is not None:
+                    await events.tool(nothing)
                 continue
             found.append(result)
             await events.tool(
                 ToolCall(
                     tool=tool,
-                    summary=result.summary,
+                    summary=result.shown,
                     evidence_count=len(result.evidence),
                 )
             )
@@ -434,12 +444,18 @@ class AskCopilot:
             Evidence.documented(match.chunk.content, source=match.citation.label)
             for match in result.matches
         )
+        # Two renderings, because there are two readers. The model gets the
+        # passages, since it cannot cite what it has not read; the activity
+        # trail gets the documents, because a trail that prints a thousand
+        # characters of procedure is not a trail.
         summary = " ".join(
             f"{match.citation.label}: {match.chunk.content}" for match in result.matches
         )
+        titles = ", ".join(dict.fromkeys(match.citation.title for match in result.matches))
         return ToolResult(
             tool=CopilotTool.KNOWLEDGE,
             summary=summary,
+            display=f"{len(result.matches)} passages from {titles}.",
             evidence=evidence,
             citations=tuple(match.citation for match in result.matches),
         )
@@ -467,6 +483,27 @@ class AskCopilot:
         if not found:
             return NOTHING_RECORDED
         return None
+
+
+def _nothing_found(tool: CopilotTool, plan: CopilotPlan) -> ToolCall | None:
+    """The activity line for a window tool that came back empty, or None.
+
+    Only the two that read a window, and deliberately. The corpus is the other
+    tool that can find nothing, and it does not need a line here: a question
+    whose documentation was insufficient is *refused*, in prose, with PRD
+    section 19's own sentence. These two are the ones that vanish quietly.
+    """
+    if tool not in _WINDOW_TOOLS:
+        return None
+    return ToolCall(
+        tool=tool,
+        summary=f"Nothing recorded for {plan.machine_id} in the {plan.window.value} window.",
+        evidence_count=0,
+    )
+
+
+#: The tools whose emptiness is worth a line in the trail.
+_WINDOW_TOOLS = frozenset({CopilotTool.TELEMETRY, CopilotTool.TREND})
 
 
 def _messages(
