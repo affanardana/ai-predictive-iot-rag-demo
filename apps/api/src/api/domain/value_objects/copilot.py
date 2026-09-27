@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from api.domain.value_objects.citation import Citation
 from api.domain.value_objects.evidence import Evidence
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.time_window import TimeWindow
@@ -86,6 +87,10 @@ class ToolResult:
     tool: CopilotTool
     summary: str
     evidence: tuple[Evidence[str], ...] = ()
+    #: The documents this result came from. Carried here because a documented
+    #: finding's source is a rendered label, and recovering the four citation
+    #: fields from it would put the citation format in a second place.
+    citations: tuple[Citation, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate that the result says something."""
@@ -100,6 +105,25 @@ class ToolCall:
     tool: CopilotTool
     summary: str
     evidence_count: int
+
+
+class AnswerVerdict(StrEnum):
+    """What the Copilot did with a question.
+
+    Three states rather than two, and the third is the one that makes the
+    grounding check visible: `FALLBACK` means the evidence was good and the
+    model's prose was not, so the reader is shown the evidence instead of an
+    answer that failed verification.
+    """
+
+    ANSWERED = "ANSWERED"
+    #: The evidence does not support an answer. The model was never called --
+    #: `PRD.md` section 19 is enforced by not asking, which is the only version
+    #: of the rule a small model cannot talk its way around.
+    REFUSED = "REFUSED"
+    #: The evidence was sufficient and the model's answer did not survive the
+    #: grounding check, so the deterministic rendering is served in its place.
+    FALLBACK = "FALLBACK"
 
 
 #: What a tool hands the composer. Aliased because the generic would otherwise

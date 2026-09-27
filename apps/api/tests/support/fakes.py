@@ -8,9 +8,11 @@ are type-checked against them.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timedelta
 
+from api.domain.errors import ChatUnavailableError
+from api.domain.ports.chat import ChatMessage
 from api.domain.ports.events import MachineEvent
 from api.domain.ports.health import HealthStatus
 from api.domain.ports.reranker import RerankResult
@@ -155,3 +157,45 @@ class StubReranker:
     def documents_ranked(self) -> list[str]:
         """Every passage this was asked to score, across all calls."""
         return [document for _, documents in self.calls for document in documents]
+
+
+class StubChat:
+    """A language model that says what a test tells it to.
+
+    Records the messages it was given, which is how the prompt is asserted on:
+    the tests check that the evidence reached it, rather than checking the prose
+    it produced. `refuse` models an outage, which is a different thing from a
+    bad answer and has a different verdict.
+    """
+
+    def __init__(
+        self,
+        answer: str = "Vibration is rising on M003 [1]. Inspect the bearing [2].",
+        *,
+        raise_on_stream: bool = False,
+        model_id: str = "stub-composer@test",
+    ) -> None:
+        self._answer = answer
+        self._raise = raise_on_stream
+        self._model_id = model_id
+        self.calls: list[list[ChatMessage]] = []
+        self.max_tokens: list[int] = []
+
+    @property
+    def model_id(self) -> str:
+        """Identity reported in every answer."""
+        return self._model_id
+
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Yield the answer a word at a time, so the sink is exercised."""
+        self.calls.append(list(messages))
+        self.max_tokens.append(max_tokens)
+        if self._raise:
+            raise ChatUnavailableError("no model here")
+        for word in self._answer.split(" "):
+            yield f"{word} "

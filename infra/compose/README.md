@@ -58,9 +58,9 @@ gitignored, so a clone cannot contain them and the inference container will not
 start without them. From the development machine:
 
 ```powershell
-ssh root@72.61.214.194 "mkdir -p /opt/pdm/infra/compose/model/artifact"
-scp colab_report/best.pt             root@72.61.214.194:/opt/pdm/infra/compose/model/
-scp data/training/normalization.json root@72.61.214.194:/opt/pdm/infra/compose/model/artifact/
+ssh root@72.61.214.194 "mkdir -p /root/opt/pdm/infra/compose/model/artifact"
+scp colab_report/best.pt             root@72.61.214.194:/root/opt/pdm/infra/compose/model/
+scp data/training/normalization.json root@72.61.214.194:/root/opt/pdm/infra/compose/model/artifact/
 ```
 
 The layout matters. `INFERENCE_CHECKPOINT` is `/model/best.pt` and
@@ -70,7 +70,7 @@ The layout matters. `INFERENCE_CHECKPOINT` is `/model/best.pt` and
 ## Deploying
 
 ```bash
-cd /opt/pdm/infra/compose
+cd /root/opt/pdm/infra/compose
 cp env.template .env
 nano .env                      # DATABASE_URL and the two generated secrets
 docker compose config          # renders cleanly, no warnings
@@ -106,7 +106,7 @@ before reloading**, because a syntax error takes down both projects:
 cd ~/ifne/backend/deploy/vps
 cp Caddyfile Caddyfile.bak
 
-# Append the two blocks from /opt/pdm/infra/compose/caddy.snippet
+# Append the two blocks from /root/opt/pdm/infra/compose/caddy.snippet
 nano Caddyfile
 ```
 
@@ -131,7 +131,7 @@ the two new hostnames on the first request to each.
 ## Checking it
 
 ```bash
-cd /opt/pdm/infra/compose
+cd /root/opt/pdm/infra/compose
 docker compose ps
 ```
 
@@ -189,7 +189,7 @@ ingested from a container rather than from a laptop — the same principle the
 simulator follows:
 
 ```bash
-cd /opt/pdm/infra/compose
+cd /root/opt/pdm/infra/compose
 docker compose --profile tools run --rm ingest
 ```
 
@@ -222,6 +222,34 @@ The same check by hand: open the dashboard's **Knowledge** page and ask *"Vibrat
 is rising on M003. What should I inspect?"* — the Bearing Inspection SOP should
 come back with its section and page. Ask for a gearbox torque specification and
 it should say the documentation does not cover it.
+
+## Measuring the local model (Phase 10)
+
+The Copilot's language model runs on this box, so its speed is a property of this
+host rather than of the code. Two numbers decide whether it is viable — decode
+speed and resident memory — and neither can be assumed:
+
+```bash
+cd /root/opt/pdm
+docker run --rm \
+  -v "$PWD/infra/compose/model:/model:ro" \
+  -v "$PWD/services/inference/scripts/bench_chat.py:/bench.py:ro" \
+  python:3.12-slim bash -c '
+pip install --quiet "llama-cpp-python==0.3.35" \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && python /bench.py'
+```
+
+It needs the GGUF at `model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf` (~940 MB,
+alongside `best.pt`), and it writes nothing: the container is thrown away and
+your four services keep running. The first run downloads the runtime and loads
+the weights, so give it a minute before the numbers appear.
+
+**What the numbers mean.** Decode speed is the one the design rests on: at 8–16
+tokens/s an answer takes about half a minute, which is why the page streams it.
+Below roughly 5 tokens/s the model is not worth its 1.2 GB and the Copilot
+should serve its evidence without generated prose. Peak RSS is the other: the
+inference container's limit has to cover it with room to spare, on a host with
+no swap.
 
 ## Running the demonstration
 

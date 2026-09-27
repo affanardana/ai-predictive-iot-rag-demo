@@ -21,6 +21,12 @@ from collections.abc import Sequence
 #: costs a line in a response, and a missed one costs a fabricated value.
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
+#: A finding reference, as the prompt asks the model to write them: `[1]`, `[2]`.
+#: Removed before the numbers are read, because a marker is a pointer to a
+#: finding and not a value — counting them would flag every correctly cited
+#: answer as a fabrication.
+_MARKER = re.compile(r"\[\d+\]")
+
 #: How close two numbers must be to count as the same one, relative to the
 #: evidence value. A model that writes "0.81" for an evidence value of "0.812"
 #: rounded rather than invented, and calling that a fabrication would make the
@@ -41,7 +47,7 @@ def ungrounded_numbers(answer: str, evidence: Sequence[str]) -> tuple[str, ...]:
         return ()
 
     ungrounded: list[str] = []
-    for token in _NUMBER.findall(answer):
+    for token in _NUMBER.findall(_MARKER.sub(" ", answer)):
         if token in ungrounded:
             continue
         if not _is_grounded(float(token), known):

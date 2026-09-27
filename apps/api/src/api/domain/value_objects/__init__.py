@@ -6,6 +6,13 @@ and carry no identity -- two instances with equal fields are interchangeable.
 
 from api.domain.value_objects.chunk_match import ChunkMatch
 from api.domain.value_objects.citation import Citation
+from api.domain.value_objects.copilot import (
+    MACHINE_TOOLS,
+    AnswerVerdict,
+    CopilotPlan,
+    CopilotTool,
+    ToolResult,
+)
 from api.domain.value_objects.document_category import (
     PRD_DOCUMENT_CATEGORIES,
     DocumentCategory,
@@ -22,9 +29,13 @@ from api.domain.value_objects.text_line import TextLine
 from api.domain.value_objects.time_window import SeriesResolution, TimeWindow
 
 __all__ = [
+    "MACHINE_TOOLS",
     "PRD_DOCUMENT_CATEGORIES",
+    "AnswerVerdict",
     "ChunkMatch",
     "Citation",
+    "CopilotPlan",
+    "CopilotTool",
     "DocumentCategory",
     "Evidence",
     "EvidenceKind",
@@ -39,4 +50,5 @@ __all__ = [
     "SeriesResolution",
     "TextLine",
     "TimeWindow",
+    "ToolResult",
 ]

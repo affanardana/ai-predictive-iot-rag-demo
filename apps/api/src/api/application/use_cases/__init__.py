@@ -5,6 +5,7 @@ through `execute`. They are wired by the composition root, never instantiated
 inside another layer.
 """
 
+from api.application.use_cases.ask_copilot import AskCopilot, CopilotAnswer, EventSink
 from api.application.use_cases.get_machine_detail import GetMachineDetail
 from api.application.use_cases.get_prediction_history import GetPredictionHistory
 from api.application.use_cases.get_telemetry_history import GetTelemetryHistory
@@ -32,6 +33,9 @@ from api.application.use_cases.stop_simulation import StopSimulation
 from api.application.use_cases.update_incident_status import UpdateIncidentStatus
 
 __all__ = [
+    "AskCopilot",
+    "CopilotAnswer",
+    "EventSink",
     "GetMachineDetail",
     "GetPredictionHistory",
     "GetTelemetryHistory",
