@@ -23,7 +23,7 @@ import statistics
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +49,12 @@ DEFAULT_TIMEOUT_SECONDS = 300.0
 #: not a fault, so the evaluation waits rather than reporting it as a failure.
 MAX_RATE_LIMIT_WAITS = 8
 MAX_WAIT_SECONDS = 120.0
+
+#: How long to wait for the deployment to finish starting, and how often to
+#: ask. Sized for the inference container's cold start -- about twenty seconds
+#: of model loading -- with room for a slow one on a box that is also serving.
+DEFAULT_READY_TIMEOUT_SECONDS = 300.0
+READY_POLL_SECONDS = 5.0
 
 #: Verdicts, as the domain spells them.
 ANSWERED = "ANSWERED"
@@ -356,6 +362,47 @@ def _frames(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]]:
                 with suppress(json.JSONDecodeError):
                     yield event, json.loads("\n".join(data))
             event, data = None, []
+
+
+def wait_for_ready(
+    client: httpx.Client,
+    api_url: str,
+    *,
+    timeout_seconds: float = DEFAULT_READY_TIMEOUT_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Wait until every dependency answers, or give up.
+
+    **This exists because its absence produced two false failures on the first
+    honest run.** The images had just been rebuilt, which recreates the
+    inference container, and that container spends about twenty seconds loading
+    its chat model and two encoders. The evaluation started asking immediately:
+    the first two questions came back `chat_unavailable` and
+    `retrieval_unavailable`, and the scorecard reported two errors -- correctly,
+    in the sense that the requests did fail, and uselessly, because what failed
+    was the deployment's start-up rather than the Copilot's answering.
+
+    A scorecard is a measurement of the system, so it waits for the system to
+    exist first. Returns whether it became ready; a caller that gets `False`
+    should say so rather than reporting a scorecard full of infrastructure
+    errors.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            response = client.get(f"{api_url.rstrip('/')}/health/dependencies", timeout=10.0)
+            response.raise_for_status()
+            dependencies = response.json().get("dependencies", [])
+            unreachable = [d["name"] for d in dependencies if not d.get("reachable")]
+            if dependencies and not unreachable:
+                return True
+            if unreachable:
+                print(f"  waiting for: {', '.join(unreachable)}", file=sys.stderr)
+        except (httpx.HTTPError, ValueError) as exc:
+            unreachable = [f"the API ({type(exc).__name__})"]
+        if time.monotonic() >= deadline:
+            return False
+        sleep(READY_POLL_SECONDS)
 
 
 def measure(client: httpx.Client, api_url: str, questions: tuple[Question, ...]) -> Scorecard:

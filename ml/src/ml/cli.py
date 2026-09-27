@@ -282,6 +282,18 @@ def _copilot_evaluate(args: argparse.Namespace) -> int:
     print(f"{len(questions)} questions against {args.api_url}.", file=sys.stderr)
 
     with httpx.Client() as client:
+        # Before asking anything, wait for the system to exist. A redeploy
+        # recreates the inference container, which spends about twenty seconds
+        # loading three models -- and asking during that window reports the
+        # deployment's start-up as the Copilot's failures, which is exactly what
+        # the first honest run did.
+        if not evaluation.wait_for_ready(client, args.api_url):
+            print(
+                "error: a dependency did not become ready in time, so there is "
+                "nothing to measure yet. Check `/health/dependencies`.",
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
         card = evaluation.measure(client, args.api_url, questions)
 
     print(evaluation.render(card))

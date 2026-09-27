@@ -188,6 +188,45 @@ def test_an_outage_is_recorded_rather_than_raised() -> None:
     assert answer.verdict == "ERROR"
 
 
+def test_it_waits_for_the_deployment_to_be_ready() -> None:
+    """The false failures the first honest run produced, pinned.
+
+    A rebuild recreates the inference container, which loads three models in
+    about twenty seconds. Asking immediately reported two `chat_unavailable` and
+    `retrieval_unavailable` errors -- correctly, in that the requests failed, and
+    uselessly, because what failed was the deployment's start-up.
+    """
+    answers = [
+        {"dependencies": [{"name": "inference", "reachable": False}]},
+        {"dependencies": [{"name": "inference", "reachable": False}]},
+        {"dependencies": [{"name": "inference", "reachable": True}]},
+    ]
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json=answers.pop(0)),
+    )
+    client = httpx.Client(transport=transport)
+
+    ready = evaluation.wait_for_ready(client, "http://api", sleep=lambda _: None)
+
+    assert ready is True
+    assert answers == []
+
+
+def test_it_gives_up_rather_than_waiting_for_ever() -> None:
+    """A dependency that never arrives is reported, not hung on."""
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"dependencies": [{"name": "inference", "reachable": False}]}
+        )
+    )
+
+    ready = evaluation.wait_for_ready(
+        httpx.Client(transport=transport), "http://api", timeout_seconds=0.0
+    )
+
+    assert ready is False
+
+
 def test_the_rates_are_computed_over_the_right_denominators() -> None:
     """Each rate has its own population, and mixing them would hide a failure.
 
