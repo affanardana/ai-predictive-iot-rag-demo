@@ -1,70 +1,135 @@
 {
   "manifest_version": 1,
-  "description": "What the Copilot should do with a question: which sources the planner must select, which it must not, and whether the corpus can answer it at all. Two readers: the offline planner test in apps/api/tests, which needs no network, and `ml copilot evaluate`, which scores a running stack.",
+  "description": "What the Copilot should do with a question: which sources the planner must select, which it must not, and whether the maintenance documentation covers it. Two readers: the offline planner test in apps/api/tests, which needs no network, and `ml copilot evaluate`, which scores a running stack. `corpus_covers` is about the documentation only -- a refusal is expected when a question asks the corpus and the corpus cannot answer, which is why the two facts are separate.",
   "questions": [
     {
       "id": "ac-007-the-demonstration-question",
       "question": "Why is M003 becoming risky and what should I inspect according to the SOP?",
-      "required_tools": ["get_machine_current_state", "get_machine_telemetry", "get_machine_trend", "get_machine_prediction", "search_maintenance_knowledge"],
+      "required_tools": [
+        "get_machine_current_state",
+        "get_machine_telemetry",
+        "get_machine_trend",
+        "get_machine_prediction",
+        "search_maintenance_knowledge"
+      ],
       "forbidden_tools": [],
-      "answerable": true,
-      "note": "PRD.md AC-007, verbatim. It asks two things at once -- why risk is rising, and what to do about it -- so every source is in scope: 'risk' selects the telemetry, trend and prediction tools, and 'inspect'/'SOP' select the corpus."
+      "note": "PRD.md AC-007, verbatim. It asks two things at once -- why risk is rising, and what to do about it -- so every source is in scope: 'risk' selects the telemetry, trend and prediction tools, and 'inspect'/'SOP' select the corpus.",
+      "corpus_covers": true
     },
     {
       "id": "telemetry-must-not-reach-for-the-documentation",
       "question": "What happened to M003 during the last five hours?",
-      "required_tools": ["get_machine_current_state", "get_machine_telemetry", "get_machine_trend", "get_machine_incidents"],
-      "forbidden_tools": ["search_maintenance_knowledge"],
-      "answerable": false,
-      "note": "MASTERPLAN.md section 6's own negative example, and the one that matters most: a question about what a machine has been doing must not read the manuals. The window also selects incidents, because a five-hour window is a period something might have happened in."
+      "required_tools": [
+        "get_machine_current_state",
+        "get_machine_telemetry",
+        "get_machine_trend",
+        "get_machine_incidents"
+      ],
+      "forbidden_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "note": "MASTERPLAN.md section 6's own negative example, and the one that matters most: a question about what a machine has been doing must not read the manuals. The window also selects incidents, because a five-hour window is a period something might have happened in.",
+      "corpus_covers": false
     },
     {
       "id": "a-signal-without-a-risk-words-stays-out-of-the-model",
-      "question": "What is the current temperature of M005?",
-      "required_tools": ["get_machine_current_state", "get_machine_telemetry", "get_machine_trend"],
-      "forbidden_tools": ["search_maintenance_knowledge"],
-      "answerable": false,
-      "note": "A named signal selects the series and its trend. No risk word appears, so the prediction tool is not required -- and asserting it as *forbidden* would over-constrain a question the model's output is legitimately adjacent to."
+      "question": "What is the current temperature of M003?",
+      "required_tools": [
+        "get_machine_current_state",
+        "get_machine_telemetry",
+        "get_machine_trend"
+      ],
+      "forbidden_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "note": "A named signal selects the series and its trend. No risk word appears, so the prediction tool is not required -- and asserting it as *forbidden* would over-constrain a question the model's output is legitimately adjacent to. Named M005 until the first live run: only M003 is registered on the deployment, so the Copilot refused with `unknown_machine` before it reached any telemetry tool, and the scorecard called that a tool selection failure. A question about an unregistered machine is a real case, but it is a different one.",
+      "corpus_covers": false
     },
     {
       "id": "a-procedure-question-needs-the-corpus",
       "question": "What should I inspect on M003 according to the maintenance manual?",
-      "required_tools": ["get_machine_current_state", "search_maintenance_knowledge"],
+      "required_tools": [
+        "get_machine_current_state",
+        "search_maintenance_knowledge"
+      ],
       "forbidden_tools": [],
-      "answerable": true,
-      "note": "'Inspect' and 'manual' are documentation words; the machine is named, so the current state comes along as context. Nothing asks about risk, so nothing asks the model."
+      "note": "'Inspect' and 'manual' are documentation words; the machine is named, so the current state comes along as context. Nothing asks about risk, so nothing asks the model.",
+      "corpus_covers": true
     },
     {
       "id": "incidents-are-their-own-source",
       "question": "How many incidents has M003 had?",
-      "required_tools": ["get_machine_current_state", "get_machine_incidents"],
-      "forbidden_tools": ["search_maintenance_knowledge"],
-      "answerable": false,
-      "note": "An incident question reads the incident record and nothing else."
+      "required_tools": [
+        "get_machine_current_state",
+        "get_machine_incidents"
+      ],
+      "forbidden_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "note": "An incident question reads the incident record and nothing else.",
+      "corpus_covers": false
     },
     {
       "id": "the-negative-control",
       "question": "What is the torque spec for the M003 gearbox output shaft?",
-      "required_tools": ["search_maintenance_knowledge"],
+      "required_tools": [
+        "search_maintenance_knowledge"
+      ],
       "forbidden_tools": [],
-      "answerable": false,
-      "note": "The demonstration's negative control: the corpus has no torque specification, so the answer must be a refusal. Identical in form to the evaluation set's own unanswerable questions, which is why the threshold was calibrated on those."
+      "note": "The demonstration's negative control: the corpus has no torque specification, so the answer must be a refusal. Identical in form to the evaluation set's own unanswerable questions, which is why the threshold was calibrated on those.",
+      "corpus_covers": false
     },
     {
       "id": "no-machine-means-the-corpus-alone",
       "question": "Which grease is approved for electric motor bearings?",
-      "required_tools": ["search_maintenance_knowledge"],
-      "forbidden_tools": ["get_machine_current_state", "get_machine_telemetry", "get_machine_trend", "get_machine_prediction", "get_machine_incidents", "get_machine_history"],
-      "answerable": true,
-      "note": "No machine is named, so no machine tool may be selected -- there is nothing for one to read. The corpus is the only source that can answer, and this one it can."
+      "required_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "forbidden_tools": [
+        "get_machine_current_state",
+        "get_machine_telemetry",
+        "get_machine_trend",
+        "get_machine_prediction",
+        "get_machine_incidents",
+        "get_machine_history"
+      ],
+      "note": "No machine is named, so no machine tool may be selected -- there is nothing for one to read. The corpus is the only source that can answer, and this one it can.",
+      "corpus_covers": true
     },
     {
       "id": "a-risk-question-without-a-procedure",
       "question": "Is M003 at risk of failing?",
-      "required_tools": ["get_machine_current_state", "get_machine_telemetry", "get_machine_trend", "get_machine_prediction"],
-      "forbidden_tools": ["search_maintenance_knowledge"],
-      "answerable": false,
-      "note": "The mirror of the negative example: a risk question stays out of the manuals. 'Risk' and 'failing' select the trend and the model; nothing asks what to do about it."
+      "required_tools": [
+        "get_machine_current_state",
+        "get_machine_telemetry",
+        "get_machine_trend",
+        "get_machine_prediction"
+      ],
+      "forbidden_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "note": "The mirror of the negative example: a risk question stays out of the manuals. 'Risk' and 'failing' select the trend and the model; nothing asks what to do about it.",
+      "corpus_covers": false
+    },
+    {
+      "id": "unanswerable-calibration-interval",
+      "question": "What calibration interval does ISO 17025 require for the plant flow meters?",
+      "required_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "forbidden_tools": [],
+      "corpus_covers": false,
+      "note": "From the retrieval set's unanswerable five, whose scores calibrated the sufficiency threshold. A single refusal case is not a rate, which is why two of them are here."
+    },
+    {
+      "id": "unanswerable-rated-current",
+      "question": "What is the rated current specification for the M003 motor?",
+      "required_tools": [
+        "search_maintenance_knowledge"
+      ],
+      "forbidden_tools": [],
+      "corpus_covers": false,
+      "note": "Names a machine, so the planner also reads the current state -- and still must refuse, because the question is about a figure no finding contains. Replaced 'how many litres of coolant does the chiller hold' after the evaluation set found that the planner has no word for a specification question: that one tripped nothing, so no corpus lookup happened and the refusal never had a chance. 'Rated' and 'spec' are now triggers; the class is wider than the words, which the changelog says out loud."
     }
   ]
 }

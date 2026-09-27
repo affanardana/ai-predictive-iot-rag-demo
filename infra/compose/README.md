@@ -228,10 +228,26 @@ docker compose --profile tools run --rm ingest
 ```
 
 That parses the ten PDFs in `dummy_pdfs/`, sends them to the API inside the
-compose network, and activates each version. The service is profile-gated, so
-`docker compose up -d` never starts it: it is a job, and a job with a restart
-policy would re-ingest on a loop. It needs the API up and migrated — the
-migration is applied from a developer machine, above.
+compose network, and activates each version.
+
+**Its image is not rebuilt by `docker compose up -d --build`.** The service is
+profile-gated, and an unqualified `up` neither starts nor builds one — so after
+any change to `ml`, the ingester keeps using the previous image until it is
+asked for by name:
+
+```bash
+docker compose --profile tools build ingest
+```
+
+The symptom is a command the code has that the image does not: `ml: error:
+argument command: invalid choice: 'copilot'` against an image predating the
+subcommand. Passing `--build` on the run line works too, at the cost of
+rebuilding on every invocation. This caught the Phase 11 deploy, which is why it
+is written down rather than left to the next person.
+
+It never starts on its own — `docker compose up -d` skips a profile-gated
+service, which is what stops a job with a restart policy from re-ingesting on a
+loop. It needs the API up and migrated, which the deploy steps above cover.
 
 Two things to expect the first time. The build fetched ~180 MB of model weights
 from HuggingFace, so the first request loads two encoders on one core and takes

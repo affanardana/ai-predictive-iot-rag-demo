@@ -61,10 +61,29 @@ class Question:
     """One question, and what the system owes it."""
 
     id: str
-    question: str
+    text: str
     required: frozenset[str]
     forbidden: frozenset[str]
-    answerable: bool
+    #: Whether the maintenance *documentation* covers this question. Not whether
+    #: the system can answer it: a question about incidents or telemetry is
+    #: answerable from the product's own data and has nothing to do with the
+    #: corpus -- which is why the refusal expectation below needs both facts,
+    #: not this one alone.
+    corpus_covers: bool
+
+    @property
+    def expects_refusal(self) -> bool:
+        """Whether the system should have refused this question.
+
+        **Both conditions, and the first version used only the second.** A
+        refusal is PRD section 19's answer to a question the *documentation*
+        cannot support -- so it is only expected when the question actually asks
+        the documentation. Three of the set's questions are about what a machine
+        has been doing, and the corpus genuinely does not cover them; the system
+        answered them from telemetry, incidents and the model, which is the
+        product working. The harness called all three failures.
+        """
+        return "search_maintenance_knowledge" in self.required and not self.corpus_covers
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,13 +142,13 @@ class Scorecard:
 
     @property
     def answerable(self) -> tuple[Answer, ...]:
-        """Answers to questions the corpus covers."""
-        return tuple(a for a in self.answers if a.question.answerable and a.error is None)
+        """Answers to questions that should have been answered."""
+        return tuple(a for a in self.answers if not a.question.expects_refusal and a.error is None)
 
     @property
     def unanswerable(self) -> tuple[Answer, ...]:
-        """Answers to questions it does not."""
-        return tuple(a for a in self.answers if not a.question.answerable and a.error is None)
+        """Answers to questions that should have been refused."""
+        return tuple(a for a in self.answers if a.question.expects_refusal and a.error is None)
 
     @property
     def grounded_rate(self) -> float:
@@ -190,10 +209,10 @@ def read_questions(path: Path) -> tuple[Question, ...]:
     questions = tuple(
         Question(
             id=entry["id"],
-            question=entry["question"],
+            text=entry["question"],
             required=frozenset(entry.get("required_tools", ())),
             forbidden=frozenset(entry.get("forbidden_tools", ())),
-            answerable=bool(entry.get("answerable", False)),
+            corpus_covers=bool(entry.get("corpus_covers", False)),
         )
         for entry in manifest.get("questions", ())
     )
@@ -221,6 +240,8 @@ def ask(client: httpx.Client, api_url: str, question: Question) -> Answer:
     broken deployment as a crash.
     """
     for attempt in range(MAX_RATE_LIMIT_WAITS + 1):
+        # Each attempt times itself, so a question that waited 57 seconds to be
+        # asked is not reported as a 57-second answer.
         answer = _ask_once(client, api_url, question)
         if answer.retry_after is None:
             return answer
@@ -247,7 +268,7 @@ def _ask_once(client: httpx.Client, api_url: str, question: Question) -> Answer:
         with client.stream(
             "POST",
             f"{api_url.rstrip('/')}/api/v1/copilot/chat",
-            json={"question": question.question},
+            json={"question": question.text},
             timeout=DEFAULT_TIMEOUT_SECONDS,
         ) as response:
             if response.status_code == 429:
@@ -268,6 +289,9 @@ def _ask_once(client: httpx.Client, api_url: str, question: Question) -> Answer:
     except httpx.HTTPError as exc:
         error = f"{type(exc).__name__}: {exc}"
 
+    # Measured from this attempt's start, so the wait above is excluded: a
+    # latency that included the harness pacing itself would report the
+    # deployment's rate limit rather than its speed.
     latency = time.perf_counter() - started
     if error is not None:
         return Answer(
@@ -415,9 +439,9 @@ def _problems(card: Scorecard) -> list[str]:
         missing = answer.question.required - set(answer.tools)
         if missing:
             problems.append(f"{answer.question.id}: never consulted {sorted(missing)}")
-        if answer.verdict != REFUSED and not answer.question.answerable and answer.error is None:
+        if answer.question.expects_refusal and answer.verdict != REFUSED:
             problems.append(
-                f"{answer.question.id}: answered a question the corpus cannot support "
-                f"({answer.verdict}) -- PRD section 19 wants a refusal"
+                f"{answer.question.id}: answered a question the documentation cannot "
+                f"support ({answer.verdict}) -- PRD section 19 wants a refusal"
             )
     return problems

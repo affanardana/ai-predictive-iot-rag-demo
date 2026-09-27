@@ -23,10 +23,10 @@ def a_question(**overrides: object) -> evaluation.Question:
     """One question, with whatever the test cares about overridden."""
     fields: dict[str, object] = {
         "id": "q1",
-        "question": "Why is M003 risky?",
+        "text": "Why is M003 risky?",
         "required": frozenset({"get_machine_trend"}),
         "forbidden": frozenset({"search_maintenance_knowledge"}),
-        "answerable": True,
+        "corpus_covers": True,
     }
     fields.update(overrides)
     return evaluation.Question(**fields)  # type: ignore[arg-type]
@@ -52,8 +52,8 @@ def test_the_question_set_loads() -> None:
 
     assert len(questions) >= 8
     assert any(question.id == "the-negative-control" for question in questions)
-    assert any(question.answerable for question in questions)
-    assert any(not question.answerable for question in questions)
+    assert any(question.corpus_covers for question in questions)
+    assert any(not question.corpus_covers for question in questions)
 
 
 def test_an_empty_question_set_is_refused(tmp_path: Path) -> None:
@@ -128,6 +128,34 @@ def test_an_answer_is_read_from_the_done_frame() -> None:
     assert answer.tools_are_correct
 
 
+def test_a_question_that_does_not_ask_the_corpus_expects_no_refusal() -> None:
+    """The harness bug that the first live run found, pinned as a test.
+
+    *"How many incidents has M003 had?"* is answered from the incident record
+    and the corpus legitimately does not cover it. Expecting a refusal because
+    of the second fact alone reported a correctly-answered question as a PRD
+    section 19 failure -- three of them, on the deployment.
+    """
+    reading = a_question(
+        id="incidents",
+        corpus_covers=False,
+        required=frozenset({"get_machine_incidents"}),
+    )
+
+    assert reading.expects_refusal is False
+
+
+def test_a_documentation_question_the_corpus_lacks_does_expect_one() -> None:
+    """The other half: same flag, different required tools, opposite answer."""
+    control = a_question(
+        id="negative-control",
+        corpus_covers=False,
+        required=frozenset({"search_maintenance_knowledge"}),
+    )
+
+    assert control.expects_refusal is True
+
+
 def test_a_refusal_is_not_an_error() -> None:
     """The distinction the scorecard rests on.
 
@@ -163,21 +191,29 @@ def test_an_outage_is_recorded_rather_than_raised() -> None:
 def test_the_rates_are_computed_over_the_right_denominators() -> None:
     """Each rate has its own population, and mixing them would hide a failure.
 
-    Groundedness is over completed answers; abstention is over the
-    *unanswerable* ones; citations are over documented answers. A single
+    Groundedness is over completed answers; abstention is over the questions
+    that *expect* a refusal; citations are over documented answers. A single
     denominator would let a refusal count against grounding, which is the one
     thing a refusal is supposed to be.
+
+    The question that expects a refusal must ask the documentation: that pair of
+    conditions is what the first version of this harness got wrong, and it
+    reported three correctly-answered questions as failures for it.
     """
     card = evaluation.Scorecard(
         answers=(
-            an_answer(question=a_question(answerable=True), verdict=evaluation.ANSWERED),
+            an_answer(question=a_question(corpus_covers=True), verdict=evaluation.ANSWERED),
             an_answer(
-                question=a_question(id="q2", answerable=False),
+                question=a_question(
+                    id="q2",
+                    corpus_covers=False,
+                    required=frozenset({"search_maintenance_knowledge"}),
+                ),
                 verdict=evaluation.REFUSED,
-                tools=(),
+                tools=("search_maintenance_knowledge",),
             ),
             an_answer(
-                question=a_question(id="q3", answerable=False),
+                question=a_question(id="q3", corpus_covers=False),
                 verdict=evaluation.FALLBACK,
                 ungrounded=("0.81",),
                 tools=(),
@@ -186,7 +222,11 @@ def test_the_rates_are_computed_over_the_right_denominators() -> None:
     )
 
     assert card.grounded_rate == pytest.approx(2 / 3)
-    assert card.abstention_rate == pytest.approx(0.5)
+    # One question expects a refusal -- the one that asks the documentation and
+    # the documentation does not cover -- and it was refused. The third is a
+    # question the corpus also does not cover, but it never asked it, so it is
+    # not in this denominator at all.
+    assert card.abstention_rate == pytest.approx(1.0)
     assert card.verdicts[evaluation.ANSWERED] == 1
 
 
@@ -206,7 +246,16 @@ def test_a_forbidden_tool_is_named_in_the_problems() -> None:
 def test_an_unanswered_unanswerable_question_is_reported() -> None:
     """The failure PRD section 19 exists to prevent, named."""
     card = evaluation.Scorecard(
-        answers=(an_answer(question=a_question(answerable=False), verdict=evaluation.ANSWERED),)
+        answers=(
+            an_answer(
+                question=a_question(
+                    corpus_covers=False,
+                    required=frozenset({"search_maintenance_knowledge"}),
+                ),
+                verdict=evaluation.ANSWERED,
+                tools=("search_maintenance_knowledge",),
+            ),
+        )
     )
 
     rendered = evaluation.render(card)

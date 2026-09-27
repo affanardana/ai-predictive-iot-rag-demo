@@ -49,6 +49,18 @@ _DOCUMENTATION_WORDS = (
     "checklist",
     "lubricat",
     "torque",
+    # A class of question the first version of this list missed, found by the
+    # copilot evaluation set rather than by reading: asking for a *figure* the
+    # sensors do not measure -- a rated value, a specification -- is a
+    # documentation question even when it names a machine, and without these
+    # words the planner answers it from telemetry and never looks.
+    #
+    # "Torque" above is one instance of the class; these are the general signal.
+    # The list still cannot recognise every such question -- "how many litres of
+    # coolant" trips nothing here -- and that limit is recorded in the changelog
+    # rather than papered over with more words.
+    "spec",
+    "rated",
 )
 
 #: Words that mean "what has happened to this machine".
