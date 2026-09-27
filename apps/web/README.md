@@ -143,6 +143,11 @@ One environment variable:
 VITE_API_BASE_URL = https://pdm-api.72-61-214-194.sslip.io
 ```
 
+**Deployed at <https://pdm-web.vercel.app>.** The API it reads is on the VPS
+(`infra/compose/README.md`), so the two deploys are independent: pushing to
+`main` rebuilds this one, and the API needs its own `git pull` and
+`docker compose up -d`.
+
 Vite inlines `VITE_`-prefixed variables at **build** time, so changing this
 requires a **redeploy**, not a restart — and no secret may ever be given that
 prefix, because everything with it ends up in the JavaScript.

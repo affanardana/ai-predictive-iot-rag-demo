@@ -241,10 +241,45 @@ It prints two columns — vector search alone and with the cross-encoder — ove
 19 turns on: the share of questions the corpus cannot answer where the system
 said so instead of returning its nearest neighbour.
 
+**That run is also what calibrates `KNOWLEDGE_MINIMUM_SCORE`**, so it is not
+optional if the Copilot is to refuse anything. The score summary at the bottom
+prints the top score for answerable questions against unanswerable ones:
+
+```
+                        vector only    reranked
+top score, answerable (median)    …        4.26
+top score, unanswerable (median)  …       -8.17
+separation                        …       12.43
+```
+
+The reranker is a cross-encoder: its logits centre near zero and are negative
+about half the time, so a threshold of `0` sits *inside* the answerable
+distribution rather than beneath it. It abstains on answerable questions and
+admits near-misses. The value belongs in the gap — here between the worst
+answerable (-2.48) and the best unanswerable (-4.20), so `-3.3`. `.env` carries
+it; re-derive it whenever the corpus, the embedder or the reranker changes.
+
 The same check by hand: open the dashboard's **Knowledge** page and ask *"Vibration
 is rising on M003. What should I inspect?"* — the Bearing Inspection SOP should
 come back with its section and page. Ask for a gearbox torque specification and
 it should say the documentation does not cover it.
+
+### The Copilot's two refusals
+
+Worth knowing which is which, because they look similar on the page and only one
+of them is the system's own:
+
+- **The system refuses** (`verdict: REFUSED`, no tokens, no model call) when the
+  retrieval's best score is below the threshold above. This is PRD section 19
+  enforced by not asking, and it cannot be argued with — `reason` names the
+  score and the threshold.
+- **The model declines in prose** when the retrieval *did* clear the threshold
+  but the passages do not answer the question. The answer is still grounded —
+  every number checked, no procedure that is not in a `DOCUMENTED` finding — but
+  the guarantee is a prompt rather than a structure.
+
+If the second happens for a question the corpus genuinely cannot answer, the
+threshold is too low and the fix is the calibration above, not the prompt.
 
 ## Measuring the local model (Phase 10)
 

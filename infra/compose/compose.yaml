@@ -65,9 +65,15 @@ services:
       # loaded, because the API refuses to compare vectors from two models --
       # and that refusal is only useful if the two names are in one place.
       KNOWLEDGE_EMBEDDING_MODEL: ${KNOWLEDGE_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2@main}
-      # The lowest rerank score that counts as evidence. The default is
-      # permissive; `ml knowledge evaluate` prints the separation it should be
-      # set from.
+      # The lowest rerank score that counts as evidence, below which the
+      # Copilot refuses rather than answering from the nearest neighbour.
+      #
+      # The fallback here is the *uncalibrated* value, and 0 is not a safe one:
+      # the reranker is a cross-encoder whose logits centre near zero, so 0
+      # stands in the middle of its range. The measured value for this corpus is
+      # -3.3 and `env.template` carries it with the numbers behind it -- a
+      # deployment that skips the template gets the placeholder and refuses
+      # answerable questions.
       KNOWLEDGE_MINIMUM_SCORE: ${KNOWLEDGE_MINIMUM_SCORE:-0.0}
       # Which model wrote the prose, as the file's name. This is the *name* of
       # the same file the inference container loads by path, taken from one

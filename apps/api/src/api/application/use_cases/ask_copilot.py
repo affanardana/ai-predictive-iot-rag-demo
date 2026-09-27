@@ -88,6 +88,22 @@ class _NoEvents:
 
 
 @dataclass(frozen=True, slots=True)
+class Refusal:
+    """Why there is no answer, and what the system says instead.
+
+    Two fields because a refusal answers two questions. `answer` is what the
+    caller is told -- `PRD.md` section 19's sentence, verbatim -- and `reason` is
+    why, in the words of whichever rule decided it. Collapsing them would mean
+    either a reader cannot tell what was checked, or the API's answer to "why
+    can't you answer this" is a diagnostic string rather than the sentence the
+    requirement names.
+    """
+
+    answer: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class CopilotAnswer:
     """A question, the evidence found for it, and what was made of that."""
 
@@ -209,12 +225,16 @@ class AskCopilot:
             return CopilotAnswer(
                 question=plan.question,
                 verdict=AnswerVerdict.REFUSED,
-                answer=refusal,
+                answer=refusal.answer,
                 machine_id=plan.machine_id,
+                # The evidence the tools *did* find travels with the refusal.
+                # The page shows it under the refusal rather than instead of it:
+                # what the system found is worth seeing even when it does not
+                # answer the question.
                 evidence=_evidence_of(found),
                 citations=_citations_of(found),
                 tool_calls=_calls_of(found),
-                reason=refusal,
+                reason=refusal.reason,
             )
 
         findings = tuple(result.summary for result in found)
@@ -470,8 +490,24 @@ class AskCopilot:
         """What the documentation says."""
         query = plan.search_query or plan.question
         result = await self.search_knowledge.execute(query, limit=DOCUMENTED_LIMIT)
-        if not result.matches:
-            return None
+        if not result.sufficiency.is_sufficient:
+            # A result with no evidence, rather than `None`. The two say
+            # different things and PRD section 19 turns on the difference:
+            # `None` would mean the tool was never run, and the trail would not
+            # show that the documentation was consulted and found wanting. It
+            # also carries the sufficiency rule's own words, which is what the
+            # refusal quotes as its reason.
+            #
+            # This is the check the phase was verified without: `matches` is
+            # never empty on a corpus that has anything in it, so testing for
+            # emptiness alone meant the Copilot answered every documentation
+            # question from its nearest neighbour -- the one thing section 19
+            # forbids.
+            return ToolResult(
+                tool=CopilotTool.KNOWLEDGE,
+                summary=result.sufficiency.reason,
+                display="no passage cleared the sufficiency threshold",
+            )
         evidence = tuple(
             Evidence.documented(match.chunk.content, source=match.citation.label)
             for match in result.matches
@@ -492,7 +528,7 @@ class AskCopilot:
             citations=tuple(match.citation for match in result.matches),
         )
 
-    def _refusal(self, plan: CopilotPlan, found: Sequence[ToolResult]) -> str | None:
+    def _refusal(self, plan: CopilotPlan, found: Sequence[ToolResult]) -> Refusal | None:
         """Return why no answer is possible, or None when one is.
 
         Decided on the evidence, before the model is asked anything. This is
@@ -505,15 +541,21 @@ class AskCopilot:
                 (result for result in found if result.tool is CopilotTool.KNOWLEDGE),
                 None,
             )
-            if knowledge is None:
-                # The question asked for a procedure and the corpus had nothing
-                # that cleared the sufficiency threshold.
-                return INSUFFICIENT_EVIDENCE
+            if knowledge is None or not knowledge.evidence:
+                # The question asked for a procedure and the corpus could not
+                # support one. Two sentences, because they answer two different
+                # questions: section 19's own sentence is what the system says,
+                # and the sufficiency rule's is why -- which document came
+                # closest and what it scored, or that nothing matched at all.
+                return Refusal(
+                    answer=INSUFFICIENT_EVIDENCE,
+                    reason=knowledge.summary if knowledge is not None else INSUFFICIENT_EVIDENCE,
+                )
         machine_findings = [result for result in found if result.tool is not CopilotTool.KNOWLEDGE]
         if not machine_findings and plan.machine_id is None:
-            return NOTHING_RECORDED
+            return Refusal(answer=NOTHING_RECORDED, reason=NOTHING_RECORDED)
         if not found:
-            return NOTHING_RECORDED
+            return Refusal(answer=NOTHING_RECORDED, reason=NOTHING_RECORDED)
         return None
 
 

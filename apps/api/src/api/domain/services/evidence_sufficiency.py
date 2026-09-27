@@ -10,8 +10,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-#: Default minimum rerank score for a passage to count as evidence. Refined by
-#: a measured run of `ml knowledge evaluate`; see the changelog.
+#: Minimum rerank score for a passage to count as evidence, when the deployment
+#: has not measured one.
+#:
+#: **0.0 is not a permissive floor, and calling it one was a mistake worth
+#: recording.** `ms-marco` is a cross-encoder: it emits a logit centred near
+#: zero, negative about half the time, so a threshold of zero stands in the
+#: *middle* of its range rather than beneath it. Measured against this corpus,
+#: answerable questions score a median of +4.26 and unanswerable ones -8.17,
+#: and zero abstains on one of the twelve answerable questions while still
+#: admitting a near-miss. The deployment sets the value this default stands in
+#: for, and `ml knowledge evaluate` is what measures it.
 DEFAULT_MINIMUM_SCORE = 0.0
 
 

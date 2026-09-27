@@ -108,9 +108,15 @@ class Settings(BaseSettings):
     copilot_max_concurrent_questions: int = 1
 
     #: Lowest rerank score that counts as evidence, below which the answer is
-    #: "the documentation does not cover this" (PRD section 19). The default is
-    #: deliberately permissive and is meant to be replaced by the value a
-    #: measured run of `ml knowledge evaluate` separates on.
+    #: "the documentation does not cover this" (PRD section 19).
+    #:
+    #: 0.0 here is the *uncalibrated* default, not a safe one: the reranker is a
+    #: cross-encoder whose logits centre near zero, so this stands in the middle
+    #: of its range. Measured against the deployed corpus, answerable questions
+    #: score a median of +4.26 and unanswerable ones -8.17, with the worst
+    #: answerable at -2.48 and the best unanswerable at -4.20 — so the value
+    #: belongs in that gap. `env.template` carries it and explains how to
+    #: re-derive it; `ml knowledge evaluate` prints the two medians.
     knowledge_minimum_score: float = 0.0
 
     risk_warning_threshold: float = DEFAULT_WARNING_THRESHOLD

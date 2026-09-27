@@ -18,6 +18,7 @@ from api.application.use_cases import (
     ListMachines,
     SearchMaintenanceKnowledge,
 )
+from api.application.use_cases.ask_copilot import INSUFFICIENT_EVIDENCE
 from api.domain.value_objects.copilot import AnswerVerdict, CopilotTool, ToolCall
 from api.domain.value_objects.evidence import EvidenceKind
 from api.infrastructure.persistence.memory.unit_of_work import InMemoryUnitOfWorkFactory
@@ -160,6 +161,44 @@ async def test_the_model_is_not_called_when_the_corpus_cannot_answer(
     assert answer.verdict is AnswerVerdict.REFUSED
     assert "insufficient" in answer.answer.casefold()
     assert chat.calls == []
+
+
+async def test_a_corpus_that_is_present_but_irrelevant_still_refuses(
+    uow_factory: InMemoryUnitOfWorkFactory,
+) -> None:
+    """The case the empty-corpus test does not reach, and the one that shipped.
+
+    A corpus with anything in it always returns *some* nearest neighbour, so a
+    check for "were there any matches" never fires and the Copilot answers every
+    documentation question from whatever ranked first -- which is exactly what
+    `PRD.md` section 19 forbids, and what `evidence_sufficiency.py` exists to
+    prevent. The refusal has to be driven by the sufficiency rule, not by
+    emptiness.
+
+    Both sentences are asserted, because they answer different questions:
+    section 19's own is what the system says, and the rule's is why.
+    """
+    await seed_machine(uow_factory)
+    chat = StubChat()
+    # A cross-encoder scores an irrelevant pair below zero; the deployed
+    # threshold is 0.0, so this is the torque-spec question's shape.
+    copilot = a_copilot(uow_factory, chat, reranker=StubReranker(scores={BEARING: -4.2}))
+    sink = RecordingSink()
+
+    answer = await copilot.execute(
+        "What is the torque spec for the M003 gearbox output shaft?", sink=sink
+    )
+
+    assert answer.verdict is AnswerVerdict.REFUSED
+    assert answer.answer == INSUFFICIENT_EVIDENCE
+    assert "-4.20" in answer.reason
+    assert chat.calls == []
+    # The trail says the documentation was consulted and found wanting, rather
+    # than saying nothing at all: a tool that was never run and a tool that
+    # found nothing are different things.
+    knowledge = next(call for call in sink.calls if call.tool is CopilotTool.KNOWLEDGE)
+    assert knowledge.evidence_count == 0
+    assert "sufficiency" in knowledge.summary
 
 
 async def test_a_question_about_a_machine_that_is_not_registered_refuses(
