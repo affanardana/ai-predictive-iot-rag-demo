@@ -55,7 +55,7 @@ export function SimulationPanel({ machineId }: { machineId: string }) {
   return (
     <Card
       title="Simulation"
-      subtitle="Runs execute on the server, not on a laptop."
+      subtitle="Runs execute on the server."
       actions={
         <div className="flex items-center gap-2">
           <button

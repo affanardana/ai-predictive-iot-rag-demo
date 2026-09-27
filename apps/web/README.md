@@ -151,7 +151,7 @@ One environment variable:
 VITE_API_BASE_URL = https://pdm-api.72-61-214-194.sslip.io
 ```
 
-**Deployed at <https://pdm-web.vercel.app>.** The API it reads is on the VPS
+**Deployed at <https://pdm-sim.vercel.app>.** The API it reads is on the VPS
 (`infra/compose/README.md`), so the two deploys are independent: pushing to
 `main` rebuilds this one, and the API needs its own `git pull` and
 `docker compose up -d`.

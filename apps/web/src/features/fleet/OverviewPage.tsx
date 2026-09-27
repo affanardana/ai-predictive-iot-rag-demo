@@ -10,6 +10,7 @@ import { EmptyState, ErrorState, LoadingState } from '@/components/States'
 import { FleetSummary } from '@/features/fleet/FleetSummary'
 import { MachineTable } from '@/features/fleet/MachineTable'
 import { AboutPanel } from '@/features/fleet/AboutPanel'
+import { HowToPanel } from '@/features/fleet/HowToPanel'
 
 export function OverviewPage() {
   const fleet = useQuery(fleetQuery())
@@ -24,6 +25,7 @@ export function OverviewPage() {
       </div>
 
       <AboutPanel />
+      <HowToPanel />
 
       {fleet.isPending && <LoadingState label="Loading the fleet…" />}
       {fleet.isError && <ErrorState error={fleet.error} />}
