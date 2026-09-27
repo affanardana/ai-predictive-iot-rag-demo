@@ -230,6 +230,49 @@ def test_the_rates_are_computed_over_the_right_denominators() -> None:
     assert card.verdicts[evaluation.ANSWERED] == 1
 
 
+def test_the_citation_rate_covers_only_documentation_questions() -> None:
+    """The second denominator bug this scorecard has had.
+
+    An answer to *"what is the current temperature"* needs no document, so
+    including it reports a citation failure for something that was never meant
+    to have a citation. The first live run reported 33% for exactly that reason,
+    while every answer that did cite something cited it correctly.
+    """
+    card = evaluation.Scorecard(
+        answers=(
+            # Needs no document, and carries none: correct, and must not count.
+            an_answer(
+                question=a_question(id="temperature", required=frozenset({"get_machine_trend"}))
+            ),
+            # Asks the corpus, cites it: correct, and is the denominator.
+            an_answer(
+                question=a_question(
+                    id="procedure", required=frozenset({"search_maintenance_knowledge"})
+                ),
+                citation_count=2,
+            ),
+        )
+    )
+
+    assert card.citation_rate == pytest.approx(1.0)
+
+
+def test_a_documentation_answer_without_a_source_is_reported() -> None:
+    """The other half: same denominator, and it can fail."""
+    card = evaluation.Scorecard(
+        answers=(
+            an_answer(
+                question=a_question(
+                    id="procedure", required=frozenset({"search_maintenance_knowledge"})
+                ),
+                citation_count=0,
+            ),
+        )
+    )
+
+    assert card.citation_rate == 0.0
+
+
 def test_a_forbidden_tool_is_named_in_the_problems() -> None:
     """A rate on its own is not actionable; the offending question is."""
     card = evaluation.Scorecard(

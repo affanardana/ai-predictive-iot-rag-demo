@@ -172,11 +172,28 @@ class Scorecard:
 
     @property
     def citation_rate(self) -> float:
-        """Share of documented answers that carried at least one source."""
-        documented = [a for a in self.answerable if a.verdict in {ANSWERED, FALLBACK}]
+        """Share of documentation-backed answers that carried a source.
+
+        **Over the questions that required the corpus, not over every answer.**
+        Asking what a machine's temperature is needs no document, and counting
+        that answer here reports a citation failure for something that was never
+        supposed to have one -- which is what the first live run did, reporting
+        33% while every answer that actually cited anything did so correctly.
+
+        This is the second time a denominator was the bug in this scorecard, and
+        both were the same mistake: measuring a rate over the questions that
+        happened to answer rather than over the ones the rate is about.
+        """
+        documented = [
+            answer
+            for answer in self.answers
+            if "search_maintenance_knowledge" in answer.question.required
+            and answer.error is None
+            and answer.verdict in {ANSWERED, FALLBACK}
+        ]
         if not documented:
             return 0.0
-        return sum(1.0 for a in documented if a.citation_count > 0) / len(documented)
+        return sum(1.0 for answer in documented if answer.citation_count > 0) / len(documented)
 
     @property
     def medians(self) -> dict[str, float]:

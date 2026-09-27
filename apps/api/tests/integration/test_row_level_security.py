@@ -81,7 +81,15 @@ async def test_every_table_has_row_level_security_enabled(schema_engine: AsyncEn
             ),
             {"tables": list(TABLES)},
         )
-        found = dict(rows.tuples())
+        # An explicit loop, not `dict(rows)`. `dict()` checks for a `keys()`
+        # method first, `CursorResult` has one, and the result is treated as a
+        # mapping and subscripted -- which raises `TypeError: 'CursorResult'
+        # object is not subscriptable`. Ruff's C416 rule asks for exactly that
+        # rewrite, which is how this reached CI; the rule is right in general
+        # and wrong here, so the loop stays.
+        found: dict[str, bool] = {}
+        for name, enabled in rows:
+            found[name] = enabled
 
     assert set(found) == set(TABLES), (
         f"tables missing from the database: {set(TABLES) - set(found)}"

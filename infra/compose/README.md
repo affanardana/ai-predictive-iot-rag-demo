@@ -112,6 +112,21 @@ minutes. It installs from the CPU index deliberately — see the top of
 `Dockerfile.inference` — because the default PyPI wheel for Linux pulls roughly
 2.9 GB of CUDA libraries this service cannot use.
 
+**Two images, two rebuild paths, and forgetting one is silent.** `up -d --build`
+rebuilds the API and the inference service; it does **not** rebuild `ingest`,
+which is profile-gated. So a change that spans both — a planner rule and the
+evaluation that measures it, say — needs both:
+
+```bash
+docker compose up -d --build
+docker compose --profile tools build ingest
+```
+
+The failures look like product bugs rather than stale images: an evaluation
+reporting that the Copilot ignored a source it was told to consult, or `ml:
+error: invalid choice: 'copilot'`. Both have been seen; both are in the changelog
+rather than in anyone's memory.
+
 `SOURCE_COMMIT` is why that line is not just `docker compose up -d --build`. The
 image records the commit it was built from and reports it at `/health`, so
 *"is the box running what I pushed?"* has an answer that is not a guess:
