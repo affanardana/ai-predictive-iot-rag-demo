@@ -291,6 +291,44 @@ async def test_the_answer_carries_the_window_it_used(
     assert "1h" in trend_calls[0].summary
 
 
+async def test_the_trend_tool_reports_movement_and_only_movement(
+    uow_factory: InMemoryUnitOfWorkFactory,
+    chat: StubChat,
+) -> None:
+    """Two claims per signal that moved, and nothing for the ones that did not.
+
+    Found on the deployed stack: a machine with 240 readings produced **twelve**
+    evidence items from this tool -- an endpoint and a fit for all six signals,
+    including load, whose fitted change was -0.008 across the whole window. That
+    is the deadband's own definition of noise, and eleven more lines of it bury
+    the four that matter, on the page and in the prompt alike.
+
+    A tool that found no movement still answers, which is the other half: six
+    flat signals and no trend tool at all look identical to a reader, and one of
+    them means the machine is steady.
+    """
+    async with uow_factory() as uow:
+        await uow.machines.add(make_machine("M003"))
+        readings = [make_reading(vibration=1.4), make_reading(vibration=2.3)]
+        for index, reading in enumerate(readings):
+            await uow.telemetry.add_many_idempotent(
+                [make_telemetry(event_id=f"evt-{index}", machine_id="M003", reading=reading)]
+            )
+
+    answer = await a_copilot(uow_factory, chat).execute("What happened to M003 in the last hour?")
+
+    trend_call = next(call for call in answer.tool_calls if call.tool is CopilotTool.TREND)
+    inferred = [item for item in answer.evidence if item.kind is EvidenceKind.INFERRED]
+    # Vibration is the only signal this fixture moves, and the only kind of
+    # evidence the trend tool derives. Five flat signals, one INFERRED line.
+    assert len(inferred) == 1
+    # Two claims for every signal that moved: what was read, and what was
+    # derived from it. Not twelve, which is what it produced on the box.
+    assert trend_call.evidence_count == 2 * len(inferred)
+    assert "1 of 6 signals moved over the 1h window" in trend_call.summary
+    assert len(trend_call.summary) < 200
+
+
 async def test_the_prediction_tool_reports_movement_not_a_repeat(
     uow_factory: InMemoryUnitOfWorkFactory,
     chat: StubChat,

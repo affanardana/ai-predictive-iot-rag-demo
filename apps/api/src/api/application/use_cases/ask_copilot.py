@@ -24,7 +24,7 @@ from api.domain.ports.chat import ChatMessage, ChatModel, ChatRole
 from api.domain.read_models import TelemetrySeries
 from api.domain.services.copilot_plan import plan_question
 from api.domain.services.grounding import ungrounded_numbers
-from api.domain.services.trend import summarise
+from api.domain.services.trend import DEADBAND_RATIO, TrendDirection, summarise
 from api.domain.value_objects.citation import Citation
 from api.domain.value_objects.copilot import (
     AnswerVerdict,
@@ -339,23 +339,49 @@ class AskCopilot:
         trends = summarise(series)
         if not trends:
             return None
-        evidence = tuple(
-            item
-            for trend in trends
-            # Both claims, each labelled: what was read, and what was derived
-            # from it. A reader can check the first against the charts.
-            for item in (
-                Evidence.observed(
-                    f"{machine_id} {trend.endpoints} over the {window.value} window."
-                ),
-                Evidence.inferred(f"{machine_id} {trend.fit}."),
+        # Only the signals that moved. A trend is a report of movement, and a
+        # fitted change of -0.008 across a window is not one -- it is the
+        # deadband's own definition of noise, and eleven more lines of it would
+        # bury the four that matter on the page and in the prompt alike.
+        moved = [trend for trend in trends if trend.direction is not TrendDirection.FLAT]
+        resolution = trends[0].resolution
+        if moved:
+            # Both claims per signal, each labelled: what was read, and what was
+            # derived from it. A reader can check the first against the charts.
+            evidence = tuple(
+                item
+                for trend in moved
+                for item in (
+                    Evidence.observed(
+                        f"{machine_id} {trend.endpoints} over the {window.value} window."
+                    ),
+                    Evidence.inferred(f"{machine_id} {trend.fit}."),
+                )
             )
-        )
-        moved = [trend for trend in trends if trend.direction.value != "FLAT"]
-        summary = "; ".join(trend.summary for trend in moved) or "every signal was flat"
+            summary = "; ".join(trend.summary for trend in moved)
+        else:
+            # Said rather than omitted. Six flat signals and no trend tool at
+            # all look the same to a reader, and one of them means the machine
+            # is steady.
+            evidence = (
+                Evidence.inferred(
+                    f"No signal on {machine_id} moved by more than "
+                    f"{DEADBAND_RATIO:.0%} of its own value over the {window.value} window."
+                ),
+            )
+            summary = "no signal moved beyond the deadband"
         return ToolResult(
             tool=CopilotTool.TREND,
-            summary=f"{machine_id} trends over {window.value}: {summary}",
+            summary=f"{machine_id} over the {window.value} window ({resolution}): {summary}",
+            # The window is in the trail line as well as in the summary: a
+            # trail that says "vibration rising" without saying over what is a
+            # claim the reader cannot check, and the trail is what they see.
+            display=(
+                f"{len(moved)} of {len(trends)} signals moved over the {window.value} window: "
+                + ", ".join(f"{trend.signal} {trend.direction.value.lower()}" for trend in moved)
+                if moved
+                else f"no signal moved over the {window.value} window"
+            ),
             evidence=evidence,
         )
 

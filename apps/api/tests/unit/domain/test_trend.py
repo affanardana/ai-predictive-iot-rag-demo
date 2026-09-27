@@ -127,9 +127,14 @@ def test_the_summary_carries_both_claims() -> None:
     assert "1.4" in trend.endpoints and "2.3" in trend.endpoints
     assert "least-squares" in trend.fit
     # The summary is what the model reads, so it carries the numbers and the
-    # resolution; the method lives on `fit`, which is the evidence line a reader
-    # checks the derivation against.
-    assert "1.4" in trend.summary and "1-minute buckets" in trend.summary
+    # direction. The resolution is *not* in it: the caller assembles several
+    # signals into one block and states it once there, rather than six times.
+    # The method lives on `fit`, the evidence line a reader checks the
+    # derivation against.
+    assert "1.4" in trend.summary and "2.3" in trend.summary
+    assert "rising" in trend.summary
+    assert "1-minute buckets" not in trend.summary
+    assert trend.resolution == "mean of 1-minute buckets"
 
 
 def test_every_signal_is_summarised() -> None:

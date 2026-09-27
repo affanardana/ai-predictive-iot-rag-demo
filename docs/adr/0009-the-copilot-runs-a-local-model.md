@@ -124,7 +124,12 @@ on.
 ## Consequences
 
 **Answer quality is the price, and it is visible.** A 1.5B model writes plain
-prose and reasons poorly. This is defensible for a demonstration whose claim is
+prose and reasons poorly. It also gets *worse* when the evidence gets denser:
+the same question answered from twelve numeric findings produced thinner prose
+than from six, so curating what reaches the prompt — a trend that reports the
+signals that moved, not every signal — is part of the design rather than a
+presentation detail. That was measured, not assumed, and it is why the tools
+own their `display` lines separately from the text the model reads. This is defensible for a demonstration whose claim is
 *grounding*, not eloquence — and the design leans on it deliberately: the
 evidence blocks are attached by the system, so a reader can always see what the
 model was given, and the page shows the tool activity that produced it. The

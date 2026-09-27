@@ -71,16 +71,19 @@ class Trend:
 
     @property
     def summary(self) -> str:
-        """Render the endpoints and the fitted change, both, for the model."""
-        movement = (
-            "flat"
-            if self.direction is TrendDirection.FLAT
-            else f"{self.direction.value.lower()} by {abs(self.fitted_change):g}"
-        )
+        """One signal's movement, compactly, for a block of several of them.
+
+        The resolution is deliberately **not** here. A machine has six signals,
+        and a block that carried it per signal would say *"each stored
+        measurement"* six times -- tokens the one-core box pays for twice, once
+        in the prefill and once in the answer's attention. The caller that
+        assembles the block states it once, which is where a reader meets it.
+        """
+        if self.direction is TrendDirection.FLAT:
+            return f"{self.signal}: {self.first:g} then {self.last:g}, flat"
         return (
-            f"{self.signal}: {self.first:g} then {self.last:g} "
-            f"(change {self.change:+g}), {movement} across the window "
-            f"({self.resolution})"
+            f"{self.signal}: {self.first:g} then {self.last:g}, "
+            f"{self.direction.value.lower()} by {abs(self.fitted_change):g}"
         )
 
     @property
