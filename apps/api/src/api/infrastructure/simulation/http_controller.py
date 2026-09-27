@@ -11,6 +11,13 @@ import httpx
 
 from api.domain.errors import SimulationUnavailableError
 from api.domain.ports.simulation import SimulationPlan
+from api.observability.metrics import (
+    Dependency,
+    Outcome,
+    observe_dependency,
+    record_dependency_call,
+)
+from api.request_context import correlation_headers
 
 #: The service's own control prefix. `simulator.control` serves these.
 RUNS_PATH = "/runs"
@@ -88,13 +95,23 @@ class HttpSimulationController:
     async def _post(self, path: str, payload: dict[str, object]) -> None:
         """Send a request, translating transport failures into a domain error."""
         try:
-            response = await self._client.post(f"{self._base_url}{path}", json=payload)
+            with observe_dependency(Dependency.SIMULATOR):
+                response = await self._client.post(
+                    f"{self._base_url}{path}", json=payload, headers=correlation_headers()
+                )
         except httpx.HTTPError as error:
+            record_dependency_call(dependency=Dependency.SIMULATOR, outcome=Outcome.UNAVAILABLE)
             raise SimulationUnavailableError(
                 f"The simulator service at {self._base_url} could not be reached: {error}"
             ) from error
 
         if response.is_error:
+            # Reachable and refusing: a different incident from unreachable, and
+            # the one that means somebody sent a run the simulator would not
+            # take.
+            record_dependency_call(
+                dependency=Dependency.SIMULATOR, outcome=Outcome.INVALID_RESPONSE
+            )
             raise SimulationUnavailableError(
                 f"The simulator refused the request with status {response.status_code}: "
                 f"{response.text[:200]}"

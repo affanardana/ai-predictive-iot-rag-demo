@@ -23,6 +23,12 @@ dependencies = [
     # unnoticed because CI installs every group; it surfaced when the API was
     # packaged for deployment and nothing else was there.
     "httpx>=0.28",
+    # The metrics exposition format, in `api/observability/`. Pure Python with no
+    # transitive dependencies, and the alternative -- writing the text format by
+    # hand -- means owning label escaping, cumulative histogram buckets and the
+    # `le` formatting, where an unescaped newline corrupts the whole scrape and
+    # the symptom is a parser error several lines from the cause.
+    "prometheus-client>=0.21,<1",
 ]
 
 [build-system]

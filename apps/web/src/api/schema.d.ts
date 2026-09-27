@@ -530,6 +530,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/dependencies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What every dependency is running
+         * @description Report each service this API depends on, and the models behind it.
+         *
+         *     **Not part of readiness, deliberately.** Readiness gates traffic -- n8n
+         *     checks it before writing telemetry -- and the inference container spends
+         *     twenty seconds loading its chat model at startup. Folding this into
+         *     readiness would mean that during every deploy the API declares itself
+         *     unready and the pipeline stops storing readings: a real outage caused by
+         *     more information.
+         *
+         *     It is also the only way to see the two side services at all. Neither
+         *     publishes a host port, so from outside the Compose bridge there is nothing
+         *     to ask -- and their model identities, which are placed by hand on the host
+         *     and change without a rebuild, exist nowhere else.
+         */
+        get: operations["dependencies_health_dependencies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health/ready": {
         parameters: {
             query?: never;
@@ -603,6 +635,35 @@ export interface components {
             role: string;
         };
         /**
+         * DependencyReportResponse
+         * @description Every dependency, in a stable order.
+         */
+        DependencyReportResponse: {
+            /** App Env */
+            app_env: string;
+            /** Dependencies */
+            dependencies: components["schemas"]["DependencyStatusSchema"][];
+        };
+        /**
+         * DependencyStatusSchema
+         * @description One dependency, and what it says it is running.
+         */
+        DependencyStatusSchema: {
+            /** Detail */
+            detail: string;
+            /**
+             * Models
+             * @description Identities the service reported about itself. For the model service this is the deployed artefacts: the LSTM's run id, the two encoders, and the Copilot's model file.
+             */
+            models?: {
+                [key: string]: string;
+            };
+            /** Name */
+            name: string;
+            /** Reachable */
+            reachable: boolean;
+        };
+        /**
          * DocumentCategory
          * @description The kind of maintenance knowledge a document carries.
          * @enum {string}
@@ -623,6 +684,12 @@ export interface components {
              * @description Which environment this process is running in.
              */
             app_env: string;
+            /**
+             * Commit
+             * @description The git commit this image was built from. `unknown` when the build did not pass one.
+             * @default unknown
+             */
+            commit: string;
             /** Detail */
             detail: string;
             /**
@@ -1991,6 +2058,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    dependencies_health_dependencies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DependencyReportResponse"];
                 };
             };
         };

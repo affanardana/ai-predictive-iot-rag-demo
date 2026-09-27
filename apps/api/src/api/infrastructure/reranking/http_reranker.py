@@ -14,6 +14,13 @@ import httpx
 
 from api.domain.errors import RetrievalUnavailableError
 from api.domain.ports.reranker import RerankResult
+from api.observability.metrics import (
+    Dependency,
+    Outcome,
+    observe_dependency,
+    record_dependency_call,
+)
+from api.request_context import correlation_headers
 
 logger = logging.getLogger(__name__)
 
@@ -52,19 +59,33 @@ class HttpReranker:
             return ()
 
         try:
-            response = await self._client.post(
-                f"{self._base_url}/rerank",
-                json={"query": query, "documents": list(documents), "limit": limit},
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-            results = [
-                RerankResult(index=int(item["index"]), score=float(item["score"]))
-                for item in body["results"]
-            ]
+            with observe_dependency(Dependency.RERANKING):
+                response = await self._client.post(
+                    f"{self._base_url}/rerank",
+                    json={"query": query, "documents": list(documents), "limit": limit},
+                    headers=correlation_headers(),
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
+                results = [
+                    RerankResult(index=int(item["index"]), score=float(item["score"]))
+                    for item in body["results"]
+                ]
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("Reranking call failed: %s", type(exc).__name__)
+            record_dependency_call(
+                dependency=Dependency.RERANKING,
+                outcome=(
+                    Outcome.UNAVAILABLE
+                    if isinstance(exc, httpx.HTTPError)
+                    else Outcome.INVALID_RESPONSE
+                ),
+            )
+            logger.warning(
+                "infrastructure.reranking.call_failed",
+                extra={"error_type": type(exc).__name__, "cause": str(exc)},
+                exc_info=True,
+            )
             raise RetrievalUnavailableError(
                 "The reranking service could not be reached or returned an unusable response."
             ) from exc

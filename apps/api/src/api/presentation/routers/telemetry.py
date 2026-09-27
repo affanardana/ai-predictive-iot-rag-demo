@@ -7,6 +7,7 @@ from fastapi import APIRouter, status
 from api.domain.entities.telemetry import TelemetryRecord
 from api.domain.value_objects.machine_id import MachineId
 from api.domain.value_objects.sensor_reading import SensorReading
+from api.observability.metrics import IngestOutcome, record_telemetry
 from api.presentation.dependencies import IngestTelemetryDep, IngestTokenDep
 from api.presentation.schemas.telemetry_ingest import (
     IngestResultSchema,
@@ -35,6 +36,13 @@ async def ingest_telemetry(
     at-least-once and a retry is an expected event rather than a fault.
     """
     result = await use_case.execute([_to_record(item) for item in payload.records])
+    # Both counts, because the status code cannot tell them apart: a batch that
+    # stored nothing answers 201 exactly like one that stored everything, and a
+    # pipeline quietly re-sending every message would otherwise look identical
+    # to one that is delivering them. PRD section 24's first named failure is
+    # telemetry ingestion, and this is the only place it can be seen.
+    record_telemetry(outcome=IngestOutcome.ACCEPTED, count=result.accepted)
+    record_telemetry(outcome=IngestOutcome.DUPLICATE, count=result.duplicates)
     return IngestResultSchema(
         accepted=result.accepted,
         duplicates=result.duplicates,

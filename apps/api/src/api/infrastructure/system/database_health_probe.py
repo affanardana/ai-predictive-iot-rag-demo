@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from api.domain.ports.health import HealthStatus
+from api.observability.metrics import (
+    Dependency,
+    Outcome,
+    record_database_health,
+    record_dependency_call,
+    record_dependency_duration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,7 @@ class DatabaseHealthProbe:
         the connection string, which contains the password, so the specific
         error is logged (redacted) rather than returned to the caller.
         """
+        started = time.perf_counter()
         try:
             async with self._session_factory() as session:
                 await session.execute(_PROBE_STATEMENT)
@@ -37,6 +46,13 @@ class DatabaseHealthProbe:
                 "infrastructure.health.database_unavailable",
                 extra={"exception_type": type(exc).__name__},
             )
+            record_database_health(healthy=False)
+            record_dependency_call(dependency=Dependency.DATABASE, outcome=Outcome.UNAVAILABLE)
             return HealthStatus.down("The database is not reachable.")
 
+        record_dependency_duration(
+            dependency=Dependency.DATABASE, seconds=time.perf_counter() - started
+        )
+        record_database_health(healthy=True)
+        record_dependency_call(dependency=Dependency.DATABASE, outcome=Outcome.OK)
         return HealthStatus.up("The database is reachable.")

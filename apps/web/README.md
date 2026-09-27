@@ -105,10 +105,18 @@ npm run test        # vitest
 npm run build
 ```
 
-Vitest covers the pure logic — the event-to-invalidation mapping, the risk
-bands, timestamp staleness, and the chart option builders. It deliberately does
-not render ECharts or snapshot markup. End-to-end testing is Phase 11's, per
-`MASTERPLAN.md` §5.
+Vitest covers the pure logic — the event-to-invalidation mapping, the SSE frame
+parser, the risk bands, timestamp staleness, and the chart option builders — plus
+a few component tests that assert what a reader sees: `AnswerBlock.test.tsx`
+covers the Copilot's three verdicts, which is where that page's meaning lives.
+
+**There is no browser test tier.** `MASTERPLAN.md` §5 names Playwright, and Phase
+11 declined it: a suite driving a live deployment is slow and flaky, and the
+runner minutes were judged worth more than the coverage. What that leaves
+uncovered is real and worth stating — routing, styling, ECharts rendering, and
+anything that only breaks in a browser. It is recorded in ADR 0010 rather than
+left to be discovered. Still no snapshotting: a snapshot asserts that markup
+changed, not that it is right.
 
 ## Deploying
 

@@ -14,6 +14,9 @@ endpoint on the internet, and nothing would fail -- so this does.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -23,6 +26,9 @@ import yaml
 #: so the test works from any checkout -- the same approach
 #: `test_n8n_workflow.py` takes to find the workflow export.
 COMPOSE_DIR = Path(__file__).resolve().parents[5] / "infra" / "compose"
+
+#: The API package, whose declared dependencies the image has to install.
+API_PACKAGE = Path(__file__).resolve().parents[3]
 
 #: Flags that start more than one server process.
 WORKER_FLAGS = re.compile(r"(?:^|\s)(?:--workers|-w)(?:\s|=)")
@@ -108,6 +114,78 @@ def test_the_api_runs_as_a_single_process() -> None:
     work rather than a flag.
     """
     assert not WORKER_FLAGS.search(_cmd_line(_dockerfile_text("Dockerfile.api")))
+
+
+def test_the_image_installs_what_the_package_declares() -> None:
+    """Every declared dependency is in the image's own pip list.
+
+    The two lists are maintained by hand and drifted once already: `pgvector`
+    was declared in `apps/api/pyproject.toml` and missing from
+    `Dockerfile.api`, so the container crash-looped on import while every test
+    passed -- CI installs the workspace, and only the image installs that list.
+    """
+    declared = tomllib.loads((API_PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["dependencies"]
+    installed = "\n".join(_instructions(_dockerfile_text("Dockerfile.api")))
+
+    # Split on the version specifier and any extras, so `psycopg[binary]>=3.2`
+    # is looked for as `psycopg`.
+    missing = [
+        re.split(r"[<>=!\[]", dependency)[0].strip()
+        for dependency in declared
+        if re.split(r"[<>=!\[]", dependency)[0].strip() not in installed
+    ]
+
+    assert missing == [], f"declared in pyproject.toml but not installed in the image: {missing}"
+
+
+def test_no_secret_file_is_tracked() -> None:
+    """§8: "Secrets are not committed". Asked of git, not of `.gitignore`.
+
+    Reading the ignore rules would only prove they exist. Asking git whether a
+    path is tracked also catches a file added with `git add -f`, and a rule
+    deleted in a later commit -- both of which leave the ignore file looking
+    correct.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git is not on PATH, so this cannot be checked here.")
+
+    repository = COMPOSE_DIR.parents[1]
+    #: `env.template`, not `.env.example`: the latter is gitignored too, which is
+    #: the whole reason the template has the name it has -- a server gets it
+    #: through `git clone`, and `.env.*` does not travel. This list was written
+    #: the other way round first and the assertion below is what corrected it.
+    must_not_be_tracked = (".env", "infra/compose/.env", ".env.example", "infra/compose/.env")
+    must_be_tracked = ("infra/compose/env.template",)
+
+    def tracked(name: str) -> bool:
+        """Whether git knows about `name`."""
+        result = subprocess.run(  # noqa: S603 - a fixed argv, no shell
+            ["git", "ls-files", "--error-unmatch", name],  # noqa: S607 - PATH lookup intended
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+
+    for name in must_not_be_tracked:
+        assert not tracked(name), f"{name} is tracked by git, and it holds secrets."
+    for name in must_be_tracked:
+        assert tracked(name), f"{name} is not tracked, so a fresh clone has no template."
+
+
+def test_the_deployed_commit_reaches_the_image() -> None:
+    """`/health` can only report the commit if the build carries it.
+
+    A build argument and an environment variable, because the container has no
+    `.git` and the host's working tree is not what was built.
+    """
+    instructions = _instructions(_dockerfile_text("Dockerfile.api"))
+
+    assert any(line.startswith("ARG SOURCE_COMMIT") for line in instructions)
+    assert any(line.startswith("ENV") and "SOURCE_COMMIT" in line for line in instructions)
 
 
 def test_the_api_container_does_not_sync_the_whole_workspace() -> None:

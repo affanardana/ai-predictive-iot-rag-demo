@@ -43,3 +43,19 @@ def current_request_id() -> str | None:
     shutdown, and batch work.
     """
     return _request_id_var.get()
+
+
+def correlation_headers() -> dict[str, str]:
+    """Headers carrying the correlation id to whatever this request calls next.
+
+    Empty outside a request, so a caller can pass the result unconditionally
+    rather than guarding every outbound call.
+
+    The identifier travels outward so that one value reaches every container's
+    logs. Without it a chat failure is a line in the inference service's log and
+    a line in the API's log with nothing joining them, and correlating the two
+    is guesswork against a timestamp -- which is exactly the position PRD
+    section 24's "diagnose inference failures" leaves you in.
+    """
+    request_id = current_request_id()
+    return {REQUEST_ID_HEADER: request_id} if request_id is not None else {}

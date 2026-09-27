@@ -27,7 +27,9 @@ number that was in its evidence.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -60,10 +62,23 @@ def model() -> Iterator[LlamaChat]:
 
     Loading costs about twenty seconds, which is why this is module-scoped: two
     loads would double the slowest thing this file does.
+
+    **`Settings` is built directly rather than through `from_environment`**, and
+    that is what makes this tier runnable anywhere but a full deployment.
+    `from_environment` requires a checkpoint and a training artefact to exist,
+    and both are gitignored -- so a test that used it could only ever run beside
+    the served model's files. What is under test here is the chat model, which
+    needs neither; the placeholder paths say so rather than pretending.
     """
-    settings = Settings.from_environment()
-    if settings.chat_model is None:
+    chat_model = os.environ.get("INFERENCE_CHAT_MODEL")
+    if not chat_model:
         pytest.skip("INFERENCE_CHAT_MODEL is not set, so there is no model to test.")
+    settings = Settings(
+        checkpoint=Path("unused-by-this-test"),
+        artifact_dir=Path("unused-by-this-test"),
+        chat_model=Path(chat_model),
+        chat_context=int(os.environ.get("INFERENCE_CHAT_CONTEXT", "2048")),
+    )
     yield LlamaChat(settings)
 
 

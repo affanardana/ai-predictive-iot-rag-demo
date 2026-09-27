@@ -7,6 +7,7 @@ by whichever host is chosen. Nothing here is specific to a platform.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from inference.chat import ChatModel, LlamaChat, Turn
 from inference.embedder import EMBEDDING_DIMENSIONS, Embedder, SentenceEmbedder
+from inference.logging import configure_logging
 from inference.reranker import CrossEncoderReranker, Reranker
 from inference.schemas import (
     ChatRequest,
@@ -30,6 +32,8 @@ from inference.schemas import (
 )
 from inference.scorer import InsufficientHistoryError, Scorable, Scorer
 from inference.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +83,35 @@ def create_app(
             application.state.chat = chat_model
         else:
             settings = Settings.from_environment()
+            # Configured here rather than at import, and in this branch rather
+            # than the one above, for two reasons that point the same way: the
+            # lifespan runs after uvicorn has installed its own logging, so this
+            # is the last word on the format; and the branch above is the one a
+            # test takes, where clearing the root handlers would take pytest's
+            # capture with it.
+            configure_logging(settings.log_level)
             application.state.scorer = scorer or Scorer(settings)
             application.state.embedder = embedder or SentenceEmbedder(settings)
             application.state.reranker = reranker or CrossEncoderReranker(settings)
             application.state.chat = chat_model or (
                 LlamaChat(settings) if settings.chat_model is not None else None
+            )
+            # Said once, at startup, because "which models is this container
+            # running" is the first question asked of a service that reports a
+            # number nobody recognises. `/health` answers it too, but only for
+            # someone who already knows to look there.
+            logger.info(
+                "inference.started",
+                extra={
+                    "model_version": application.state.scorer.model_version,
+                    "embed_model": application.state.embedder.model_id,
+                    "rerank_model": application.state.reranker.model_id,
+                    "chat_model": (
+                        application.state.chat.model_id
+                        if application.state.chat is not None
+                        else None
+                    ),
+                },
             )
         yield
 

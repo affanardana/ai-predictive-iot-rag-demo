@@ -16,6 +16,13 @@ import httpx
 from api.domain.errors import PredictionUnavailableError
 from api.domain.ports.predictor import ModelOutput
 from api.domain.value_objects.sensor_reading import SensorReading
+from api.observability.metrics import (
+    Dependency,
+    Outcome,
+    observe_dependency,
+    record_dependency_call,
+)
+from api.request_context import correlation_headers
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +54,35 @@ class HttpPredictor:
         payload = {"readings": [_serialise(reading) for reading in readings]}
 
         try:
-            response = await self._client.post(
-                f"{self._base_url}/predict", json=payload, timeout=self._timeout
-            )
-            response.raise_for_status()
-            body = response.json()
-            probability = float(body["failure_probability"])
-            model_version = str(body["model_version"])
+            with observe_dependency(Dependency.PREDICTION):
+                response = await self._client.post(
+                    f"{self._base_url}/predict",
+                    json=payload,
+                    headers=correlation_headers(),
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
+                probability = float(body["failure_probability"])
+                model_version = str(body["model_version"])
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("Inference call failed: %s", type(exc).__name__)
+            record_dependency_call(
+                dependency=Dependency.PREDICTION,
+                # A transport failure and an answer this code cannot read are
+                # different incidents: one is a service that is down, the other
+                # is one that is up and speaking a different language. The
+                # first response is a restart, the second is a version.
+                outcome=(
+                    Outcome.UNAVAILABLE
+                    if isinstance(exc, httpx.HTTPError)
+                    else Outcome.INVALID_RESPONSE
+                ),
+            )
+            logger.warning(
+                "infrastructure.prediction.call_failed",
+                extra={"error_type": type(exc).__name__, "cause": str(exc)},
+                exc_info=True,
+            )
             raise PredictionUnavailableError(
                 "The model service could not be reached or returned an unusable response."
             ) from exc

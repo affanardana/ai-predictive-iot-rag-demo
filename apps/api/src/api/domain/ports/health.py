@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -29,4 +30,34 @@ class HealthProbe(Protocol):
 
     async def check(self) -> HealthStatus:
         """Return the current health of the dependency."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyReport:
+    """What one dependency is, whether it answers, and what it is running.
+
+    `models` carries the identities a service reports about itself. For the
+    inference service that is the whole answer to "which model is deployed":
+    the LSTM's run id, the two encoders, and the chat model's file name -- none
+    of which this API can otherwise observe, because that container publishes no
+    port and its artefacts are placed by hand on the host.
+    """
+
+    name: str
+    reachable: bool
+    detail: str
+    models: Mapping[str, str]
+
+
+class DependencyReporter(Protocol):
+    """Reports on every service this API depends on.
+
+    One call rather than one per dependency, because the caller that wants this
+    wants all of it: a monitoring endpoint that answered for the database and
+    left the other two unknown would be a monitoring endpoint nobody trusts.
+    """
+
+    async def report(self) -> Sequence[DependencyReport]:
+        """Return one entry per dependency, in a stable order."""
         ...

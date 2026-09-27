@@ -18,6 +18,7 @@ only by running it:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
@@ -29,6 +30,7 @@ from simulator.domain.ports import GroundTruthSink, RunReporter, TelemetrySink
 from simulator.domain.session import SimulationSession
 from simulator.infrastructure.broker import broker_settings_from_env
 from simulator.infrastructure.control.server import create_app
+from simulator.infrastructure.logging import configure_logging
 from simulator.infrastructure.reporting import HttpRunReporter
 from simulator.infrastructure.sinks import (
     DiscardingGroundTruthSink,
@@ -93,12 +95,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args(argv)
 
-    print(f"control surface on http://{args.host}:{args.port}", file=sys.stderr)
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+    logging.getLogger(__name__).info(
+        "simulator.control_started",
+        extra={"host": args.host, "port": args.port},
+    )
     # No `--workers`. The run registry is in-process state, so a second worker
     # would answer `GET /runs` with an empty list and accept a second run for a
     # machine already running in the first -- the same silent-subset failure the
     # API's broadcaster has, with a worse symptom.
-    uvicorn.run(build_app(), host=args.host, port=args.port)
+    #
+    # `log_config=None` so the configuration above is the only one applied:
+    # uvicorn would otherwise install its own after this module is imported.
+    uvicorn.run(build_app(), host=args.host, port=args.port, log_config=None)
     return 0
 
 

@@ -11,6 +11,7 @@ from api.presentation.dependencies import (
     IngestKnowledgeDocumentDep,
     IngestTokenDep,
     ListKnowledgeDocumentsDep,
+    SearchBudgetDep,
     SearchMaintenanceKnowledgeDep,
     SetActiveDocumentVersionDep,
 )
@@ -122,6 +123,11 @@ async def set_active_version(
 @router.post(
     "/search",
     response_model=SearchKnowledgeResponse,
+    # Charged at the route rather than inside the use case, deliberately: the
+    # Copilot calls the same use case, and a limit there would refuse a
+    # rate-limited visitor's *question* -- the one thing this demonstration
+    # exists to do.
+    dependencies=[SearchBudgetDep],
     summary="Retrieve maintenance evidence",
 )
 async def search_knowledge(

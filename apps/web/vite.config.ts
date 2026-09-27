@@ -31,8 +31,15 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
-    // Rendering is not tested here. Playwright owns that, in Phase 11 -- so
-    // the DOM environment exists for the few component tests that assert what
-    // a user can read, not for snapshotting markup.
+    // Rendering *is* tested here now, in a small way: `AnswerBlock.test.tsx`
+    // asserts what a reader sees for each of the Copilot's three verdicts.
+    //
+    // This comment used to say Playwright owned that, in Phase 11. Phase 11
+    // declined Playwright -- a browser suite against a live deployment is
+    // flaky and slow, and the owner judged it not worth the runner minutes --
+    // so rendering is covered where it can be, in jsdom, and the gaps that
+    // leaves (routing, styling, ECharts) are real rather than papered over.
+    // Still no snapshotting: a snapshot asserts that markup changed, not that
+    // it is right.
   },
 })

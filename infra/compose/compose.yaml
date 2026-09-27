@@ -32,6 +32,11 @@ services:
       # copies `apps/api/...` and needs those paths to exist below it.
       context: ../..
       dockerfile: infra/compose/Dockerfile.api
+      args:
+        # The deploy command in `README.md` passes the host's HEAD here, so the
+        # running image can say which commit it is. Left unset it becomes
+        # `unknown`, which is the honest answer rather than a stale one.
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-unknown}
     restart: unless-stopped
     # Deliberately NOT `env_file: .env`.
     #
@@ -65,6 +70,26 @@ services:
       # loaded, because the API refuses to compare vectors from two models --
       # and that refusal is only useful if the two names are in one place.
       KNOWLEDGE_EMBEDDING_MODEL: ${KNOWLEDGE_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2@main}
+      # Read by uvicorn's own `ProxyHeadersMiddleware` *and* by this API's
+      # client-IP resolution, from one variable -- the same "one value, two
+      # readers" device as CHAT_MODEL_FILE, and load-bearing here in a way that
+      # fails silently. Uvicorn's default is `127.0.0.1,::1`; the Docker bridge
+      # is not that, so without this every request would arrive believing its
+      # peer is the gateway and every visitor would share one rate-limit budget.
+      FORWARDED_ALLOW_IPS: ${RATE_LIMIT_TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
+      # Optional bearer token for `GET /metrics`. Blank means public, which is
+      # what local work and a scraper that accepts only a URL both need.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Per-address rate ceilings, in requests per minute. Sized to clear the
+      # demonstration rather than to shape it: one dashboard tab polls about ten
+      # times a minute idle and fifty with a live run, so the global ceiling is
+      # thirty times the resting rate and exists to stop a scraper rather than a
+      # person. The three route ceilings are the ones with teeth.
+      RATE_LIMIT_GLOBAL_PER_MINUTE: ${RATE_LIMIT_GLOBAL_PER_MINUTE:-600}
+      RATE_LIMIT_COPILOT_PER_MINUTE: ${RATE_LIMIT_COPILOT_PER_MINUTE:-1}
+      RATE_LIMIT_SIMULATION_PER_MINUTE: ${RATE_LIMIT_SIMULATION_PER_MINUTE:-1}
+      RATE_LIMIT_SEARCH_PER_MINUTE: ${RATE_LIMIT_SEARCH_PER_MINUTE:-6}
       # The lowest rerank score that counts as evidence, below which the
       # Copilot refuses rather than answering from the nearest neighbour.
       #
@@ -150,6 +175,10 @@ services:
       # One variable, two readers: the file's *name* goes to the API as
       # COPILOT_MODEL above. Set `CHAT_MODEL_FILE` in `.env` to swap models and
       # both follow.
+      # The same variable the API reads. One value, so both containers' logs
+      # are filterable together -- which is the point of the JSON formatter and
+      # of the correlation id the API forwards.
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       INFERENCE_CHAT_MODEL: /model/chat/${CHAT_MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
       # The context window, and so the KV cache that stays resident between
       # questions. 2048 rather than the model's 32768: the prompt this service
@@ -203,6 +232,7 @@ services:
       dockerfile: infra/compose/Dockerfile.simulator
     restart: unless-stopped
     environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Read by `infrastructure.broker`, which is where the defaults and the
       # reasoning behind the topic prefix live. Publishing to any prefix other
       # than the one n8n subscribes to is accepted by the broker and silently

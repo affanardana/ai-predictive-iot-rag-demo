@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The model-backed job below downloads a 940 MB GGUF and builds a torch image.
+  # That is minutes of runner time and gigabytes of bandwidth for an image that
+  # changes rarely, so it runs nightly and on demand rather than on every push.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +31,30 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --all-packages
+
+      # Validates `compose.yaml` and, through it, `env.template` -- that file
+      # is copied to `.env` here so the interpolation is checked against real
+      # values. Without the two required secrets, `${VAR:?}` fails and the step
+      # proves nothing.
+      #
+      # It catches the class of error that only appears at deploy time: an
+      # unknown variable, a typo in a service name, a YAML key that parses as
+      # something else. Cheap, and it runs before any container does.
+      - name: Validate the Compose file
+        run: |
+          cd infra/compose
+          cp env.template .env
+          DATABASE_URL='postgresql+psycopg://user:pass@host:5432/db'           INGEST_API_TOKEN='ci-not-a-secret'           N8N_ENCRYPTION_KEY='ci-not-a-secret'             docker compose config -q
+          rm -f .env
+
+      # The Definition of Done says secrets are not committed. `.gitignore`
+      # covers the obvious ones, and a test in the API suite asserts that the
+      # rules are still there -- this is for what rules cannot express, and for
+      # anything that reached the history before a rule existed.
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check formatting
         run: uv run ruff format --check .
@@ -188,3 +218,34 @@ jobs:
       # CHECK constraints, timestamptz semantics, and the epoch bucketing SQL.
       - name: Run PostgreSQL tests
         run: uv run pytest -m postgres
+
+  # ---------------------------------------------------------------------------
+  # The model-backed tier, which no per-push job can run.
+  # ---------------------------------------------------------------------------
+  # `llm`-marked tests need the GGUF and `llama-cpp-python`, and both exist only
+  # in the inference image. They were never selected by any workflow before
+  # this: the marker declares them opt-in, and nothing opted in.
+  #
+  # It also builds `Dockerfile.inference`, which is the image that changes least
+  # and breaks worst -- torch, two sentence encoders fetched from HuggingFace,
+  # and a llama.cpp wheel pinned to an ABI. A build failure there is a failed
+  # deploy, and this is the only place that finds out before the deploy does.
+  nightly-model:
+    name: Model tier (inference image)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the inference image
+        run: docker build -f infra/compose/Dockerfile.inference -t pdm-inference:ci .
+
+      - name: Fetch the Copilot's model
+        run: |
+          mkdir -p model/chat
+          curl -fL --retry 3 -o model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf             https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
+
+      - name: Run the model-backed tests inside the image
+        run: |
+          docker run --rm             -v "$PWD/model:/model:ro"             -e INFERENCE_CHAT_MODEL=/model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf             pdm-inference:ci sh -c "pip install --quiet pytest && python -m pytest -m llm -q /app/src/inference/tests/test_chat_model.py"

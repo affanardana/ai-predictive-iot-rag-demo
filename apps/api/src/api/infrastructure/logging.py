@@ -135,12 +135,26 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+#: Loggers uvicorn configures for itself, with their own handlers and
+#: `propagate = False`.
+_UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+
 def configure_logging(level: str = "INFO") -> None:
-    """Install the JSON formatter on the root logger.
+    """Install the JSON formatter on the root logger, uvicorn's loggers included.
 
     Idempotent: replaces handlers rather than appending, so calling it twice
     (for example from both the app factory and a script) does not double every
     line.
+
+    Uvicorn's own loggers are moved onto this handler rather than left alone.
+    Without that, a container's output is two formats: this service's lines as
+    JSON, and the access line and any request traceback in uvicorn's default
+    shape -- and the traceback is the one an operator reads first. The ordering
+    works out because uvicorn configures its logging before it imports the
+    application, so this call is the last word; `simulator.control` achieves the
+    same thing by passing `log_config=None` instead, because there the ordering
+    is the other way round.
     """
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
@@ -149,3 +163,8 @@ def configure_logging(level: str = "INFO") -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level.upper())
+
+    for name in _UVICORN_LOGGERS:
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True

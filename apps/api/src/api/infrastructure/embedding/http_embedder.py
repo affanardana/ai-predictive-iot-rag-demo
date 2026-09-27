@@ -15,6 +15,13 @@ import httpx
 
 from api.domain.entities.knowledge_document import EMBEDDING_DIMENSIONS
 from api.domain.errors import EmbeddingModelMismatchError, RetrievalUnavailableError
+from api.observability.metrics import (
+    Dependency,
+    Outcome,
+    observe_dependency,
+    record_dependency_call,
+)
+from api.request_context import correlation_headers
 
 logger = logging.getLogger(__name__)
 
@@ -56,23 +63,38 @@ class HttpEmbedder:
             return ()
 
         try:
-            response = await self._client.post(
-                f"{self._base_url}/embed",
-                json={"texts": list(texts)},
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-            served = str(body["model"])
-            vectors = [tuple(float(value) for value in vector) for vector in body["embeddings"]]
+            with observe_dependency(Dependency.EMBEDDING):
+                response = await self._client.post(
+                    f"{self._base_url}/embed",
+                    json={"texts": list(texts)},
+                    headers=correlation_headers(),
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
+                served = str(body["model"])
+                vectors = [tuple(float(value) for value in vector) for vector in body["embeddings"]]
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("Embedding call failed: %s", type(exc).__name__)
+            record_dependency_call(
+                dependency=Dependency.EMBEDDING,
+                outcome=(
+                    Outcome.UNAVAILABLE
+                    if isinstance(exc, httpx.HTTPError)
+                    else Outcome.INVALID_RESPONSE
+                ),
+            )
+            logger.warning(
+                "infrastructure.embedding.call_failed",
+                extra={"error_type": type(exc).__name__, "cause": str(exc)},
+                exc_info=True,
+            )
             raise RetrievalUnavailableError(
                 "The embedding service could not be reached or returned an unusable response."
             ) from exc
 
         # Outside the try, so a mismatch is not reported as an outage.
         if served != self._model_id:
+            record_dependency_call(dependency=Dependency.EMBEDDING, outcome=Outcome.MISMATCH)
             raise EmbeddingModelMismatchError(expected=self._model_id, actual=served)
         if len(vectors) != len(texts):
             raise RetrievalUnavailableError(

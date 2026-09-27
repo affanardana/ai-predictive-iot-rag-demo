@@ -277,12 +277,13 @@ layers = [
     "api.composition",
     "api.infrastructure | api.application",
     "api.domain",
-    # A shared kernel, sitting below even the domain. The request identifier is
-    # written by presentation middleware and read by infrastructure's log
-    # formatter, so neither layer may own it and neither may import the other.
-    # Placed lowest, it can import nothing from `api` while staying importable
-    # by everything above it.
-    "api.request_context",
+    # Two shared kernels, sitting below even the domain. Each is written by one
+    # layer and read by another that may not import it: the request identifier
+    # is set by presentation middleware and read by infrastructure's log
+    # formatter, and a metric is recorded by infrastructure's adapters and
+    # exposed by a presentation route. Placed lowest, they can import nothing
+    # from `api` while staying importable by everything above them.
+    "api.request_context | api.observability",
 ]
 
 # --- Domain purity ---------------------------------------------------------
@@ -297,6 +298,7 @@ forbidden_modules = [
     "httpx",
     "numpy",
     "pandas",
+    "prometheus_client",
     "psycopg",
     "pydantic",
     "pydantic_settings",

@@ -41,6 +41,12 @@ train = ["torch>=2.6"]
 # runs on a machine that has never installed it.
 knowledge = ["pypdf>=5.1", "httpx>=0.28"]
 
+# `ml copilot evaluate` measures a running stack over HTTP and needs nothing
+# else -- no parser, no corpus manifest. Its own extra rather than riding on
+# `knowledge`, so the error message names the thing the reader wants: the two
+# commands share `httpx` and nothing else.
+copilot = ["httpx>=0.28"]
+
 # `ml` is the first workspace member to depend on another. Without this, uv
 # treats `simulator` as a PyPI package name and fails at lock time; with it, the
 # dependency resolves to the sibling member, so the two always build together

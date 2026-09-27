@@ -20,7 +20,13 @@ from api.application.use_cases import AskCopilot
 from api.domain.errors import DomainError
 from api.domain.ports.chat import ChatMessage, ChatRole
 from api.domain.value_objects.copilot import ToolCall
-from api.presentation.dependencies import AskCopilotDep
+from api.observability.metrics import (
+    ToolOutcome,
+    Verdict,
+    record_copilot_run,
+    record_copilot_tool,
+)
+from api.presentation.dependencies import AskCopilotDep, CopilotBudgetDep
 from api.presentation.errors.error_catalog import resolve
 from api.presentation.presenters import to_copilot_answer, to_tool_call
 from api.presentation.schemas.copilot import AskRequest
@@ -38,7 +44,14 @@ DONE_EVENT = "done"
 ERROR_EVENT = "error"
 
 
-@router.post("/chat", summary="Ask the Copilot a question")
+@router.post(
+    "/chat",
+    # First, so an over-budget caller is refused before the single answer slot
+    # is even considered: a 429 and a 409 are different conversations, and the
+    # budget is the cheaper one to answer.
+    dependencies=[CopilotBudgetDep],
+    summary="Ask the Copilot a question",
+)
 async def chat(request: AskRequest, use_case: AskCopilotDep) -> StreamingResponse:
     """Answer a maintenance question, streaming the work as it happens.
 
@@ -96,8 +109,22 @@ async def _frames(
     async def run() -> None:
         try:
             answer = await use_case.execute(question, sink=Sink(), history=history)
+            # Recorded here rather than inside the use case: the verdict and the
+            # tool trail are on the answer the presentation layer already holds,
+            # and a metric is not something `api.application` should know about.
+            record_copilot_run(verdict=Verdict.of(answer.verdict.value))
+            for call in answer.tool_calls:
+                record_copilot_tool(
+                    tool=call.tool.value,
+                    outcome=ToolOutcome.FOUND if call.evidence_count else ToolOutcome.EMPTY,
+                )
             await queue.put(_frame(DONE_EVENT, to_copilot_answer(answer).model_dump(mode="json")))
         except DomainError as exc:
+            # An outage is not a verdict the Copilot reached, but it is what a
+            # reader experiences: a question that produced no answer. Recorded
+            # as its own value so a rising `error` count is visible rather than
+            # hidden among the refusals.
+            record_copilot_run(verdict=Verdict.ERROR)
             # The response is already a 200 by now, so a failure has to be a
             # frame. It carries the same code the error catalog would have put
             # in the envelope, so a client handles both the same way.

@@ -97,7 +97,7 @@ cd /root/opt/pdm/infra/compose
 cp env.template .env
 nano .env                      # DATABASE_URL and the two generated secrets
 docker compose config          # renders cleanly, no warnings
-docker compose up -d --build
+SOURCE_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
 
 Two secrets to generate — `openssl rand -hex 32` for each:
@@ -111,6 +111,17 @@ Two secrets to generate — `openssl rand -hex 32` for each:
 minutes. It installs from the CPU index deliberately — see the top of
 `Dockerfile.inference` — because the default PyPI wheel for Linux pulls roughly
 2.9 GB of CUDA libraries this service cannot use.
+
+`SOURCE_COMMIT` is why that line is not just `docker compose up -d --build`. The
+image records the commit it was built from and reports it at `/health`, so
+*"is the box running what I pushed?"* has an answer that is not a guess:
+
+```bash
+curl -s https://pdm-api.72-61-214-194.sslip.io/health | grep commit
+```
+
+Omit the prefix and it reports `unknown` — which is also a true answer, and
+better than reporting a commit that is not the one running.
 
 Migrations are applied from a developer machine, not from a container:
 
@@ -263,6 +274,29 @@ The same check by hand: open the dashboard's **Knowledge** page and ask *"Vibrat
 is rising on M003. What should I inspect?"* — the Bearing Inspection SOP should
 come back with its section and page. Ask for a gearbox torque specification and
 it should say the documentation does not cover it.
+
+### Scoring the Copilot
+
+Retrieval has a number; the Copilot now has one too. It asks the committed
+question set against the deployed stack and reports verdicts, groundedness,
+refusals, citation coverage, tool selection and latency:
+
+```bash
+docker compose --profile tools run --rm ingest \
+  python -m ml copilot evaluate --api-url http://api:8000
+```
+
+**Expect it to take several minutes.** Eight questions against a deployment
+bounded to one a minute: the evaluation reads the `Retry-After` header and waits
+rather than recording the deployment's own limits as failures. It prints what it
+is waiting for on stderr.
+
+The number to read first is **refused when unanswerable**. If it is not 1.00,
+the sufficiency threshold is wrong rather than the prompt — see the calibration
+section above, and check the per-question lines underneath the table.
+
+`--out results.json` writes the whole scorecard down, which is what the
+changelog quotes.
 
 ### The Copilot's two refusals
 
@@ -446,6 +480,48 @@ accumulate across runs.
 The windows hide it in practice: `recorded_at` is wall-clock and the charts are
 windowed, so an earlier run falls out of the one-hour view on its own.
 
+## Watching it
+
+Three endpoints, and each answers a question the others cannot:
+
+```bash
+curl -s https://pdm-api.72-61-214-194.sslip.io/health              # up, and which commit
+curl -s https://pdm-api.72-61-214-194.sslip.io/health/ready        # can it serve (database)
+curl -s https://pdm-api.72-61-214-194.sslip.io/health/dependencies # everything, and its models
+```
+
+`/health/dependencies` is the useful one day to day: **neither the inference
+service nor the simulator publishes a host port**, so this is the only place
+they can be seen at all. It reports each dependency and, for the model service,
+the artefacts it actually loaded — the LSTM's run id, both encoders, and the
+Copilot's GGUF. That is how you confirm a model swap took effect without
+guessing from an answer's prose.
+
+`/metrics` is a Prometheus exposition, and **any Prometheus-compatible collector
+can scrape it** — Grafana Cloud's free tier is the obvious one. It is public
+unless `METRICS_TOKEN` is set, and the exposition carries route templates,
+statuses and timings rather than anything about a machine or a question.
+
+What to look at when something feels wrong, in the order worth checking:
+
+| Series | Reading |
+|---|---|
+| `pdm_dependency_calls_total{outcome!="ok"}` | Which dependency is failing, and whether it is *down* (`unavailable`) or answering nonsense (`invalid_response`) — different incidents, opposite first responses. |
+| `pdm_copilot_runs_total{verdict="error"}` | Questions that produced no answer at all, as opposed to a refusal. |
+| `pdm_copilot_runs_total{verdict="fallback"}` | The grounding check firing: the evidence was good and the prose was not. Occasional is expected from a 1.5B model; a spike means the prompt needs attention. |
+| `pdm_telemetry_records_total{outcome="duplicate"}` | The ingest route answers `201` for a batch it stored nothing from. A steady duplicate count at full volume means the pipeline is re-sending, which no status-code counter can show. |
+| `pdm_http_requests_total{status="429"}` | Rate limiting, by route template. During a demonstration this should be zero — a limit that fires while a reviewer is clicking around has cost more than it saved. |
+| `process_resident_memory_bytes` | This host has no swap, so the failure mode is an OOM kill part-way through an answer. This is how that is seen coming. |
+
+Logs are JSON lines in all three services, so a correlation id is a grep:
+
+```bash
+docker compose logs api inference | grep '"request_id": "<the id from the response header>"'
+```
+
+Every response carries `x-request-id`; send your own and it is honoured, which
+is what makes a browser bug report traceable to one request.
+
 ## When something is wrong
 
 | Symptom | Cause |
@@ -462,6 +538,8 @@ windowed, so an earlier run falls out of the one-hour view on its own.
 | Inference container restarts naming `INFERENCE_CHAT_MODEL` | The GGUF is not at the path `.env`'s `CHAT_MODEL_FILE` resolves to. Either place it (`<MODEL_DIR>/chat/<file>`) or comment the variable out — the service runs without a chat model and says so, but prediction and retrieval go down with it if the path is set and wrong. |
 | `chat_unavailable` (503) from `/copilot/chat` | The Copilot's model is not loaded. Check `/health` on the inference service: `chat_model: null` means it started without one. |
 | `chat_busy` (409) from `/copilot/chat` | Another question is being answered. One core, one answer at a time — this is the bound working, not a fault. Wait about twenty seconds. |
+| `429 rate_limited` from `/copilot/chat` | The per-address Copilot budget is spent: one question a minute, burst two. Expected if you are asking repeatedly; wrong if nobody is. |
+| Every visitor shares one rate-limit budget | `RATE_LIMIT_TRUSTED_PROXIES` does not cover the Docker bridge, so no forwarded header is believed. Check `docker network inspect pdm_default --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'` and put that subnet in `.env`. |
 | An answer arrives with verdict `FALLBACK` | The grounding check caught a number in the model's prose that was in none of the evidence. The evidence is served instead. Occasional is expected from a 1.5B model; constant means the prompt needs tuning against the real weights. |
 | Inference container restarts naming a model, after a rebuild | The build could not reach HuggingFace, so the weights were not baked in. `HF_HUB_OFFLINE=1` is set at runtime on purpose: a missing model fails loudly rather than reaching for the network mid-demonstration. Rebuild with the network up. |
 | `retrieval_unavailable` (503) from `/knowledge/search` | The same container, one stage further along — embedding or reranking could not be performed. Note this is *not* the same as "no documents matched", which is a 200 with `sufficient: false`. |

@@ -18,6 +18,13 @@ import httpx
 
 from api.domain.errors import ChatUnavailableError
 from api.domain.ports.chat import ChatMessage
+from api.observability.metrics import (
+    Dependency,
+    Outcome,
+    observe_dependency,
+    record_dependency_call,
+)
+from api.request_context import correlation_headers
 
 logger = logging.getLogger(__name__)
 
@@ -72,23 +79,41 @@ class HttpChat:
             "max_tokens": max_tokens,
         }
         try:
-            async with self._client.stream(
-                "POST",
-                f"{self._base_url}/chat",
-                json=payload,
-                timeout=self._timeout,
-            ) as response:
-                if response.status_code >= 400:
-                    # The body has to be read before it can be reported: on a
-                    # streaming response httpx has not consumed it yet.
-                    await response.aread()
-                    raise ChatUnavailableError(_message(response))
-                async for line in response.aiter_lines():
-                    text = _text_of(line)
-                    if text:
-                        yield text
+            # Timed around the whole stream, not around the connect: twenty
+            # seconds of generation is the number this product's design is
+            # built on, and a duration measured at the first byte would say
+            # nothing about it. A consumer that disconnects mid-answer closes
+            # the generator, which records the duration without recording `ok`
+            # -- which is the honest pair of facts for an abandoned answer.
+            with observe_dependency(Dependency.CHAT):
+                async with self._client.stream(
+                    "POST",
+                    f"{self._base_url}/chat",
+                    json=payload,
+                    headers=correlation_headers(),
+                    timeout=self._timeout,
+                ) as response:
+                    if response.status_code >= 400:
+                        # The body has to be read before it can be reported: on a
+                        # streaming response httpx has not consumed it yet.
+                        await response.aread()
+                        raise ChatUnavailableError(_message(response))
+                    async for line in response.aiter_lines():
+                        text = _text_of(line)
+                        if text:
+                            yield text
         except httpx.HTTPError as exc:
-            logger.warning("Chat call failed: %s", type(exc).__name__)
+            record_dependency_call(dependency=Dependency.CHAT, outcome=Outcome.UNAVAILABLE)
+            # The cause and the traceback, not just the exception's name. This
+            # line is what PRD section 24 means by diagnosing an LLM failure,
+            # and `type(exc).__name__` on its own says "ConnectError" without
+            # saying to what, from where, or why. The response the caller gets
+            # is logged separately, by the error handler.
+            logger.warning(
+                "infrastructure.chat.call_failed",
+                extra={"error_type": type(exc).__name__, "cause": str(exc)},
+                exc_info=True,
+            )
             raise ChatUnavailableError(
                 "The model service could not be reached while writing an answer."
             ) from exc

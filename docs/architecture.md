@@ -315,6 +315,55 @@ a prediction is never read as a measurement.
 `test_the_copilot_contract_is_stable` on the server, `stream.test.ts` on the
 client. A rename on either side fails a suite rather than freezing a page.
 
+## Observability
+
+Four things, and each answers a different question.
+
+```text
+GET /health            liveness      — is the process up (touches nothing)
+GET /health/ready      readiness     — can it serve (checks the database)
+GET /health/dependencies  what       — every service, and which models it runs
+GET /metrics           measurement   — request, dependency, Copilot and ingest series
+```
+
+**Readiness and dependencies are separate on purpose.** Readiness gates traffic
+— n8n checks it before writing telemetry — and the inference container spends
+twenty seconds loading its chat model at startup. Folding the model service into
+readiness would mean the API declares itself unready during every deploy and the
+pipeline stops storing readings: a real outage caused by more information.
+
+**`/health/dependencies` is the only view of two services at all.** Neither the
+inference service nor the simulator publishes a host port, so from outside the
+Compose bridge there is nothing to ask — and the artefacts they run (the LSTM's
+run id, the two encoders, the Copilot's GGUF) are placed by hand on the host and
+change without a rebuild. That endpoint is where "which model is deployed" has an
+answer, alongside the commit the API was built from.
+
+**Metrics are recorded at the edges and exposed from a leaf package.** The
+registry lives in `api/observability/`, at the same rung as `api.request_context`
+and for the same reason: infrastructure's adapters record a dependency failure
+and a presentation route exposes the result, and neither layer may import the
+other. Neither `api.domain` nor `api.application` knows what a metric is —
+`prometheus_client` is on the domain's forbidden-import list.
+
+**Every label is a closed set.** No machine ids, no addresses, no paths. The
+route label is a template read off the matched route, never the requested path,
+which is the difference between a bounded series count and one series per
+machine. A test asserts it.
+
+**Logs are one JSON object per line, in all three services.** The correlation id
+is written by the API's middleware, travels outbound on every call, and appears
+in whichever container logged the failure — which is what makes an inference
+failure and the answer that failed one grep rather than two. The API's formatter
+also claims uvicorn's own loggers, or a container's output would be two formats
+and the one an operator reads first would be the odd one.
+
+**The public surface is bounded rather than authenticated**, which is a decision
+with reasons rather than an omission: see ADR 0010. In short — reads are open
+because a browser reads them, the expensive routes carry per-address rate limits
+and container limits instead, and row-level security on the database is what
+stops a leaked Supabase anon key reading anything.
+
 ## Known limitations
 
 - **The event stream is fanned out in memory, so the API must stay a single
@@ -344,6 +393,16 @@ client. A rename on either side fails a suite rather than freezing a page.
   one-core box. Four bounds stand in for the token a browser cannot hold: one
   active run per machine, a fleet-wide ceiling, a 60-minute floor on duration,
   and the container's own limits. See ADR 0008.
+- **Every public route is unguarded, and the bounds are the whole defence.**
+  Rate limits per address, the Copilot's single answer slot, the concurrent-run
+  ceiling, the container limits, and row-level security on the database. The
+  limits are sized to clear a reviewer clicking around, which also means they
+  will not stop a determined caller for long — they bound the damage, not the
+  intent. See ADR 0010, including the list of what they are *not*.
+- **Nothing renders a browser in a test.** Playwright was declined, so routing,
+  styling and ECharts are verified by looking at the page. `AnswerBlock.test.tsx`
+  covers what the Copilot page says, which is where every defect Phase 10 found
+  on the deployed stack actually lived, but it is jsdom rather than a browser.
 - **`POST /api/v1/copilot/chat` is unguarded, and spends about twenty seconds of
   the single core per question.** A browser calls it, so a token cannot guard it;
   bounds take the token's place, and the first of them — one answer at a time,

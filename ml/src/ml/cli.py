@@ -31,6 +31,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ml.copilot.errors import CopilotEvaluationError
 from ml.dataset.artifacts import (
     build_dataset,
     life_table,
@@ -54,6 +55,8 @@ DEFAULT_ARTIFACT_DIR = "data/training"
 DEFAULT_MODEL_DIR = "data/models"
 DEFAULT_CONFIG = "ml/configs/lstm.json"
 DEFAULT_CORPUS = "knowledge/corpus.json"
+DEFAULT_COPILOT_QUESTIONS = "knowledge/eval/copilot-questions.json"
+
 DEFAULT_QUESTIONS = "knowledge/eval/questions.json"
 #: Where the API listens on the development machine. Inside compose the ingest
 #: container is pointed at `http://api:8000`, which is why this is a flag.
@@ -188,6 +191,17 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--limit", type=int, default=10)
     evaluate_parser.add_argument("--out", type=Path, default=None)
 
+    copilot = commands.add_parser("copilot", help="Measure the Copilot's answers.")
+    copilot_actions = copilot.add_subparsers(dest="action", required=True)
+
+    copilot_evaluate = copilot_actions.add_parser(
+        "evaluate",
+        help="Ask the question set and score the answers.",
+    )
+    copilot_evaluate.add_argument("--questions", type=Path, default=Path(DEFAULT_COPILOT_QUESTIONS))
+    copilot_evaluate.add_argument("--api-url", default=DEFAULT_API_URL)
+    copilot_evaluate.add_argument("--out", type=Path, default=None)
+
     return parser
 
 
@@ -196,7 +210,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return _dispatch(args)
-    except (DatasetError, EvaluationError, ExperimentError, KnowledgeError) as exc:
+    except (
+        CopilotEvaluationError,
+        DatasetError,
+        EvaluationError,
+        ExperimentError,
+        KnowledgeError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILURE
 
@@ -207,6 +227,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _model(args)
     if args.command == "knowledge":
         return _knowledge(args)
+    if args.command == "copilot":
+        return _copilot(args)
     if args.action == "generate":
         return _generate(args)
     if args.action == "export":
@@ -222,6 +244,57 @@ def _missing_knowledge_extra() -> int:
         file=sys.stderr,
     )
     return EXIT_FAILURE
+
+
+def _missing_copilot_extra() -> int:
+    """Report the missing extra, and the command that installs it."""
+    print(
+        "error: this command needs the copilot extra.\n"
+        "       uv sync --locked --all-packages --extra copilot",
+        file=sys.stderr,
+    )
+    return EXIT_FAILURE
+
+
+def _copilot(args: argparse.Namespace) -> int:
+    """Measure the Copilot against a running stack.
+
+    Unlike `knowledge`, this reads no manifest and needs no parsing: every
+    question goes over HTTP to a running API, and the scorecard is of that
+    deployment rather than of the source tree. The extra is imported here so
+    that `ml dataset report` keeps working without `httpx`.
+    """
+    return _copilot_evaluate(args)
+
+
+def _copilot_evaluate(args: argparse.Namespace) -> int:
+    """Ask every question and report the scorecard."""
+    import json
+
+    try:
+        import httpx
+
+        from ml.copilot import evaluation
+    except ImportError:
+        return _missing_copilot_extra()
+
+    questions = evaluation.read_questions(args.questions)
+    print(f"{len(questions)} questions against {args.api_url}.", file=sys.stderr)
+
+    with httpx.Client() as client:
+        card = evaluation.measure(client, args.api_url, questions)
+
+    print(evaluation.render(card))
+    if args.out is not None:
+        payload = {
+            "questions": str(args.questions),
+            "api_url": args.api_url,
+            "scorecard": evaluation.as_payload(card),
+            "verdicts": dict(card.verdicts),
+        }
+        args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"\nwrote {args.out}", file=sys.stderr)
+    return 0
 
 
 def _knowledge(args: argparse.Namespace) -> int:

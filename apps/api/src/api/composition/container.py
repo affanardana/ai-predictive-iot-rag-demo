@@ -46,7 +46,7 @@ from api.domain.ports.chat import ChatMessage, ChatModel
 from api.domain.ports.clock import Clock
 from api.domain.ports.embedder import Embedder
 from api.domain.ports.events import EventSubscriber
-from api.domain.ports.health import HealthProbe, HealthStatus
+from api.domain.ports.health import DependencyReporter, HealthProbe, HealthStatus
 from api.domain.ports.predictor import ModelOutput, Predictor
 from api.domain.ports.reranker import Reranker, RerankResult
 from api.domain.ports.simulation import SimulationController, SimulationPlan
@@ -66,7 +66,9 @@ from api.infrastructure.realtime import InProcessEventBroadcaster
 from api.infrastructure.reranking import HttpReranker
 from api.infrastructure.simulation import HttpSimulationController
 from api.infrastructure.system.database_health_probe import DatabaseHealthProbe
+from api.infrastructure.system.http_dependency_reporter import HttpDependencyReporter
 from api.infrastructure.system.system_clock import SystemClock
+from api.observability.metrics import bind_event_subscribers
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +89,10 @@ class Container:
     #: presentation layer never names an adapter -- which is what the
     #: "presentation does not import infrastructure" contract requires.
     event_subscriber: EventSubscriber
+    #: What every dependency is running, for `/health/dependencies`. A port
+    #: rather than the adapter for the same reason as `event_subscriber`: the
+    #: route must not name an infrastructure class.
+    dependency_reporter: DependencyReporter
 
     list_machines: ListMachines
     get_machine_detail: GetMachineDetail
@@ -243,6 +249,21 @@ def _assemble(
     # endpoint subscribes to. Two instances would mean a stream that never
     # fires.
     broadcaster = InProcessEventBroadcaster()
+    # Bound rather than recorded: the count changes without anyone calling in,
+    # and a gauge written on every event would be a write per telemetry message
+    # on a box with one core. `set_function` costs one call per scrape.
+    #
+    # This is also the only visibility into open streams at all. `EventSource`
+    # reconnects on its own, each stream holds a task and a queue, and nothing
+    # caps how many a browser may open -- so the gauge is how that gap is seen
+    # rather than discovered when the box runs out of memory.
+    bind_event_subscribers(lambda: broadcaster.subscriber_count)
+
+    # The dependency reporter needs a client even where nothing else does: the
+    # in-memory wiring still answers `/health/dependencies`, and a route that
+    # only works in one wiring is a route the ordinary test fixture cannot
+    # reach. Owned by the container either way, so `aclose` closes it.
+    dependency_client = inference_client if inference_client is not None else httpx.AsyncClient()
 
     # Held as locals because the Copilot wraps the same instances the container
     # exposes. A second copy of each would be stateless and harmless, and it
@@ -268,6 +289,12 @@ def _assemble(
         clock=clock,
         health_probe=health_probe,
         event_subscriber=broadcaster,
+        dependency_reporter=HttpDependencyReporter(
+            database_probe=health_probe,
+            inference_url=settings.inference_service_url,
+            simulator_url=settings.simulation_service_url,
+            client=dependency_client,
+        ),
         list_machines=list_machines,
         get_machine_detail=get_machine_detail,
         get_telemetry_history=get_telemetry_history,
@@ -352,7 +379,7 @@ def _assemble(
         simulation_controller=simulation_controller,
         engine=engine,
         broadcaster=broadcaster,
-        inference_client=inference_client,
+        inference_client=dependency_client,
     )
 
 

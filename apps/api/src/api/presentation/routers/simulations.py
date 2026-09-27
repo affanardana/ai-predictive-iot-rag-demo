@@ -14,6 +14,7 @@ from api.presentation.dependencies import (
     ListSimulationsDep,
     ReportSimulationStateDep,
     ResetSimulationDep,
+    SimulationBudgetDep,
     StartSimulationDep,
     StopSimulationDep,
 )
@@ -50,6 +51,10 @@ async def list_simulations(
     "",
     response_model=SimulationRunSchema,
     status_code=status.HTTP_201_CREATED,
+    # A run occupies the box for minutes, and three concurrent ones plus a
+    # sixty-minute floor already bound the CPU -- what is unbounded without this
+    # is a start/reset loop.
+    dependencies=[SimulationBudgetDep],
     summary="Start a simulation run",
 )
 async def start_simulation(

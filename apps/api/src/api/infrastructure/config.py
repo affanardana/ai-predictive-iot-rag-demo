@@ -101,6 +101,73 @@ class Settings(BaseSettings):
     #: container is given, so the two cannot drift.
     copilot_model: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
+    #: Which commit this image was built from, put there by the Dockerfile's
+    #: `SOURCE_COMMIT` build argument. `unknown` means the build did not pass
+    #: one -- which is a fact worth reporting rather than hiding, because the
+    #: question it answers ("is the box running what I pushed?") is asked
+    #: during an incident, and a plausible-looking wrong answer is worse than
+    #: an obvious gap.
+    source_commit: str = "unknown"
+
+    #: Credential for `GET /metrics`, in the same sense `ingest_api_token`
+    #: guards writes: one machine proving to another that it is the expected
+    #: caller. Separate from the ingest token because the two protect different
+    #: surfaces, and a leak of one should not widen the other.
+    #:
+    #: **Optional.** Unset means the endpoint is public, which is what local
+    #: work and a hosted scraper that can only be given a URL both need. The
+    #: exposition carries route templates, statuses and timings -- no machine
+    #: ids, no addresses, no question text -- so public is a defensible default
+    #: rather than an oversight.
+    metrics_token: str | None = None
+
+    #: Addresses whose `X-Forwarded-For` is believed when working out who a
+    #: request is charged to.
+    #:
+    #: **A deployment fact, not a constant**, and the default is the whole
+    #: story of why: the API publishes only to loopback, but Docker forwards
+    #: through the bridge, so the peer this process sees is the gateway
+    #: (`172.17.0.1`) rather than `127.0.0.1`. Uvicorn's own default --
+    #: `127.0.0.1,::1`, which `FORWARDED_ALLOW_IPS` in `compose.yaml` overrides
+    #: from this same value -- does not include it, so a deployment that trusted
+    #: only loopback would believe no forwarding header at all and charge every
+    #: visitor on earth to one bucket. `172.16.0.0/12` is Docker's default
+    #: address pool; a host that overrides `default-address-pools` needs this.
+    rate_limit_trusted_proxies: str = "127.0.0.1,::1,172.16.0.0/12"
+
+    #: Per-address rate ceilings, in requests per minute, for the routes that
+    #: cost real resources. See `presentation/rate_limit.py` for what these do
+    #: and do not guarantee.
+    #:
+    #: **Sized to clear the demonstration, not to shape it.** A single dashboard
+    #: tab polls roughly ten times a minute idle, and about fifty with a live
+    #: run; two tabs plus a run is the worst honest case at around two hundred.
+    #: A limiter that fires during the canonical demonstration has cost more
+    #: than it saved, so the global ceiling is thirty times the resting rate and
+    #: exists to stop a scraper rather than a person. The route ceilings are the
+    #: ones with teeth.
+    #:
+    #: The bursts are module constants rather than settings, because a burst is
+    #: a shape decision and the rate is a property of the host.
+    rate_limit_global_per_minute: int = 600
+    #: One sustained question a minute, with a burst of two so a follow-up is
+    #: immediate. The Copilot's job here is **fairness, not protection**: the
+    #: single answer slot already bounds the box at about three answers a
+    #: minute, and what it does not do is stop one visitor holding that slot so
+    #: everyone else gets `409 chat_busy` forever.
+    rate_limit_copilot_per_minute: int = 1
+    #: Three concurrent runs, one per machine and a sixty-minute floor already
+    #: bound the CPU. What is unbounded is a start/reset loop.
+    rate_limit_simulation_per_minute: int = 1
+    #: Cheap next to the others and not free: an embedding pass and a
+    #: cross-encoder pass per call, on one core. A person typing queries does
+    #: two to four a minute.
+    rate_limit_search_per_minute: int = 6
+    #: How many caller-and-budget buckets to keep before evicting the least
+    #: recently used. Bounds the limiter's own memory, which is the point: an
+    #: unbounded map keyed by address is a memory leak with a security story.
+    rate_limit_max_tracked_clients: int = 4096
+
     #: How many questions the Copilot may be answering at once. One, because a
     #: generation burns the single core for about twenty seconds: a second
     #: question would halve the speed of the first and leave both readers
@@ -122,6 +189,22 @@ class Settings(BaseSettings):
     risk_warning_threshold: float = DEFAULT_WARNING_THRESHOLD
     risk_high_threshold: float = DEFAULT_HIGH_THRESHOLD
     risk_critical_threshold: float = DEFAULT_CRITICAL_THRESHOLD
+
+    @field_validator("metrics_token", mode="before")
+    @classmethod
+    def _blank_metrics_token_is_unset(cls, value: object) -> object:
+        """Treat an empty `METRICS_TOKEN` as "not configured".
+
+        Compose passes the variable explicitly so the deployment shows what it
+        sets, and `${METRICS_TOKEN:-}` arrives as an empty string rather than as
+        absent. Without this, that empty string is a *blank secret*, which the
+        token rules reject -- so leaving the guard off would stop the API from
+        starting, and the fix would look like "delete the variable" rather than
+        "leave it empty".
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("log_level")
     @classmethod
@@ -161,22 +244,8 @@ class Settings(BaseSettings):
                 "unauthenticated deployment lets anyone write readings."
             )
 
-        if self.ingest_api_token is not None:
-            # A blank secret is not a secret: `compare_digest("", "")` is true,
-            # so an empty token would authenticate a request carrying no header
-            # at all.
-            if not self.ingest_api_token.strip():
-                raise ValueError("INGEST_API_TOKEN must not be blank.")
-            # HTTP header values are byte strings. A token outside ASCII could
-            # never be presented by any client, so it would refuse every
-            # request -- a misconfiguration best caught here rather than
-            # diagnosed from a wall of 401s.
-            if not self.ingest_api_token.isascii():
-                raise ValueError(
-                    "INGEST_API_TOKEN must be ASCII. Header values are byte "
-                    "strings and cannot carry a non-ASCII character, so this "
-                    "token could never be presented."
-                )
+        _validate_token(self.ingest_api_token, "INGEST_API_TOKEN")
+        _validate_token(self.metrics_token, "METRICS_TOKEN")
         return self
 
     @property
@@ -192,6 +261,34 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Whether this process is running in the production environment."""
         return self.app_env == "production"
+
+
+def _validate_token(token: str | None, variable_name: str) -> None:
+    """Reject a shared secret that could never be presented.
+
+    One function for both tokens so the rules cannot drift apart: whatever makes
+    `INGEST_API_TOKEN` unusable makes `METRICS_TOKEN` unusable in exactly the
+    same way, and a second copy of these two checks is a second place for one of
+    them to be forgotten.
+
+    Raises:
+        ValueError: if the token is blank or not ASCII.
+    """
+    if token is None:
+        return
+    # A blank secret is not a secret: `compare_digest("", "")` is true, so an
+    # empty token would authenticate a request carrying no header at all.
+    if not token.strip():
+        raise ValueError(f"{variable_name} must not be blank.")
+    # HTTP header values are byte strings. A token outside ASCII could never be
+    # presented by any client, so it would refuse every request -- a
+    # misconfiguration best caught here rather than diagnosed from a wall of 401s.
+    if not token.isascii():
+        raise ValueError(
+            f"{variable_name} must be ASCII. Header values are byte strings and "
+            "cannot carry a non-ASCII character, so this token could never be "
+            "presented."
+        )
 
 
 def _reject_driverless_postgres_url(url: str, variable_name: str) -> None:

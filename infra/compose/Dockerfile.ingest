@@ -23,10 +23,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# The same packages the `ml` workspace member declares, plus the `knowledge`
-# extra. Listed by name rather than `uv sync --all-packages`, for the reason the
-# API's Dockerfile records: the workspace resolves torch from PyPI, which on
-# Linux is the CUDA build, and nothing here needs torch at all.
+# The same packages the `ml` workspace member declares, plus what the
+# `knowledge` and `copilot` extras add: `pypdf` for the first, `httpx` for both.
+# Listed by name rather than `uv sync --all-packages`, for the reason the API's
+# Dockerfile records: the workspace resolves torch from PyPI, which on Linux is
+# the CUDA build, and nothing here needs torch at all.
 RUN pip install --no-cache-dir \
         "numpy>=2.1" \
         "pyarrow>=18.0" \

@@ -19,6 +19,15 @@
 #      without one.
 FROM python:3.12-slim
 
+# Which commit this image was built from, recorded rather than inferred.
+#
+# A build argument rather than something read at run time, because the container
+# has no `.git` and the host's working tree is not what was built. `unknown` is
+# the default so that a build which forgets it says so, rather than shipping a
+# plausible-looking commit that is not the one running.
+ARG SOURCE_COMMIT=unknown
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
+
 # `PYTHONUNBUFFERED` so container logs appear as they are written rather than
 # when a buffer fills -- uvicorn's access log is how a failing request is
 # diagnosed, and a buffered one lags the incident it describes.
@@ -38,7 +47,8 @@ RUN pip install --no-cache-dir \
         "psycopg[binary]>=3.2" \
         "alembic>=1.14" \
         "httpx>=0.28" \
-        "pgvector>=0.3.6"
+        "pgvector>=0.3.6" \
+        "prometheus-client>=0.21,<1"
 
 # The layout mirrors the repository rather than flattening, because
 # `alembic.ini` resolves its own paths relative to itself (`%(here)s/src` for

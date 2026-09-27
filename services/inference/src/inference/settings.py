@@ -15,6 +15,7 @@ RERANK_REVISION_VARIABLE = "INFERENCE_RERANK_REVISION"
 MODEL_CACHE_VARIABLE = "INFERENCE_MODEL_CACHE"
 CHAT_MODEL_VARIABLE = "INFERENCE_CHAT_MODEL"
 CHAT_CONTEXT_VARIABLE = "INFERENCE_CHAT_CONTEXT"
+LOG_LEVEL_VARIABLE = "LOG_LEVEL"
 
 #: The Copilot's context window. 2048 rather than 4096 because the KV cache is
 #: what stays resident between requests, and the prompt this service is sent is
@@ -64,6 +65,11 @@ class Settings:
     chat_model: Path | None = None
     chat_context: int = DEFAULT_CHAT_CONTEXT
 
+    #: Verbosity for this service's own logs. The same variable the API reads,
+    #: so one value in `.env` covers both containers and the two logs are
+    #: filterable together.
+    log_level: str = "INFO"
+
     @property
     def chat_model_id(self) -> str:
         """Identity of the chat model, as its file name.
@@ -109,6 +115,7 @@ class Settings:
             artifact_dir=Path(artifact_dir),
             chat_model=Path(chat) if chat else None,
             chat_context=int(os.environ.get(CHAT_CONTEXT_VARIABLE, DEFAULT_CHAT_CONTEXT)),
+            log_level=os.environ.get(LOG_LEVEL_VARIABLE, "INFO"),
             embed_model=os.environ.get(EMBED_MODEL_VARIABLE, DEFAULT_EMBED_MODEL),
             embed_revision=os.environ.get(EMBED_REVISION_VARIABLE, DEFAULT_REVISION),
             rerank_model=os.environ.get(RERANK_MODEL_VARIABLE, DEFAULT_RERANK_MODEL),

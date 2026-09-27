@@ -29,6 +29,7 @@ FRAMEWORK_ROOTS = frozenset(
         "numpy",
         "pandas",
         "pgvector",
+        "prometheus_client",
         "psycopg",
         "pydantic",
         "pydantic_settings",

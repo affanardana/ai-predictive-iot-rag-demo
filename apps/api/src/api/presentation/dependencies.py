@@ -8,7 +8,8 @@ reach for a repository themselves.
 from __future__ import annotations
 
 import hmac
-from typing import Annotated, cast
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any, cast
 
 from fastapi import Depends, Header, Request
 
@@ -35,7 +36,9 @@ from api.application.use_cases import (
 )
 from api.composition.container import Container
 from api.domain.ports.events import EventSubscriber
+from api.presentation.client_ip import TrustedProxies, bucket_key, resolve_client_ip
 from api.presentation.errors.authentication import AuthenticationError
+from api.presentation.rate_limit import ClientRateLimiter, Cost
 
 
 def get_container(request: Request) -> Container:
@@ -209,3 +212,35 @@ AskCopilotDep = Annotated[AskCopilot, Depends(get_ask_copilot)]
 #: Declared on a router rather than per route, so a new write cannot be added
 #: to it and silently go unauthenticated.
 IngestTokenDep = Depends(require_ingest_token)
+
+
+def budget(cost: Cost) -> Callable[..., Coroutine[Any, Any, None]]:
+    """Build a dependency that charges a request to one rate-limit budget.
+
+    A dependency rather than middleware, for the three expensive routes: the
+    limits differ per route, and a middleware would need a path-to-budget table
+    -- a second copy of the routing table, drifting from `app.py` the moment
+    somebody adds a route. A dependency also runs *before* the endpoint body,
+    which is load-bearing for the Copilot: the 429 has to be a status code, not
+    a frame inside a 200, which is the same argument `AskCopilot.claim()` makes
+    for `chat_busy`.
+
+    Declared `async def` deliberately. FastAPI runs a plain `def` dependency in
+    a worker thread, and the limiter mutates an ordered dict -- concurrent
+    threads doing that is a data race with an intermittent symptom.
+    """
+
+    async def charge(request: Request) -> None:
+        """Spend one token from this caller's budget for `cost`."""
+        limiter: ClientRateLimiter = request.app.state.rate_limiter
+        trusted: TrustedProxies = request.app.state.trusted_proxies
+        limiter.charge(bucket_key(resolve_client_ip(request.scope, trusted)), cost)
+
+    return charge
+
+
+#: The three routes that spend something worth bounding. Everything else is
+#: covered by the global ceiling in `RateLimitMiddleware`.
+CopilotBudgetDep = Depends(budget(Cost.COPILOT))
+SimulationBudgetDep = Depends(budget(Cost.SIMULATION))
+SearchBudgetDep = Depends(budget(Cost.SEARCH))
