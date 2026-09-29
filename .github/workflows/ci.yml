@@ -1,22 +1,28 @@
 name: CI
 
+# **Every job runs on demand. Nothing here runs automatically.**
+#
+# This workflow used to be the gate on every push to `main` and every pull
+# request. It is now started by hand, from the Actions tab or:
+#
+#     gh workflow run CI
+#
+# **The consequence, stated rather than implied: nothing checks a push any
+# more.** A regression can land on `main` and stay there until somebody runs
+# this. The jobs below are cheap and they pass; running the workflow before a
+# deploy, after touching `pyproject.toml` or `uv.lock`, or after changing a
+# `Dockerfile`, is the habit that replaces the automation. Nothing enforces
+# that habit -- which is the trade being made here, and worth knowing on the
+# day a broken commit reaches `main`.
+#
+# The model-backed job at the bottom is where this started: it downloads a
+# 940 MB GGUF and builds a torch image, so it never belonged in a per-push run.
+# It was nightly for a while and could never pass -- `.dockerignore` excludes
+# `**/tests/`, so the inference image contains no test files and `pytest`
+# inside it had nothing to collect. A job that emails a failure every night
+# without ever being right is worse than no job, because it teaches the habit
+# of ignoring CI mail.
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # The model-backed job below downloads a 940 MB GGUF and builds a torch image,
-  # so it does not run on every push -- and it does not run on a schedule
-  # either. It ran nightly for a while and could never pass: `.dockerignore`
-  # excludes `**/tests/`, so the inference image contains no test files and
-  # `pytest` inside it had nothing to collect. A job that emails a failure every
-  # night without ever being right is worse than no job, because it teaches the
-  # habit of ignoring CI mail -- and the four jobs above it are the ones worth
-  # reading.
-  #
-  # It is kept rather than deleted because it has one real use: verifying that
-  # `Dockerfile.inference` still builds and the model still loads, before
-  # deploying a change to either. Start it from the Actions tab, or:
-  #     gh workflow run CI
   workflow_dispatch:
 
 concurrency:
@@ -228,10 +234,12 @@ jobs:
         run: uv run pytest -m postgres
 
   # ---------------------------------------------------------------------------
-  # The model-backed tier, which no per-push job can run.
+  # The model-backed tier: the slow one, and where the manual trigger began.
   # ---------------------------------------------------------------------------
-  # **Run on demand only**, and not on a schedule: see the note on `on:` above
-  # for why the nightly version was retired.
+  # A 940 MB download and a torch image build, which is why this was never a
+  # per-push job in the first place -- and, once it could not be trusted to
+  # pass, part of why the rest of the workflow stopped being automatic too. See
+  # the note on `on:` above.
   #
   # What it does that nothing else does is build `Dockerfile.inference` -- the
   # image that changes least and breaks worst, with torch, two sentence encoders
@@ -243,19 +251,21 @@ jobs:
   # pretending.** Those tests need the GGUF *and* the test files, and
   # `.dockerignore` excludes `**/tests/`, so the image has the model and not the
   # tests. Making it run them means bind-mounting the directory in the `docker
-  # run` below; until then, the step exits non-zero and reports what is missing.
-  # The behaviour itself is covered live: the deployment runs this model on
-  # every question, and `ml copilot evaluate` scores ten of them.
-  # Renamed from `nightly-model` along with the schedule. The display `name`
-  # is what a reader sees in the Actions tab, but the key is what a status
-  # check or a `gh run` filter would name, and a key that says `nightly` about
-  # a job that cannot run nightly is the same lie in a quieter place.
+  # run` below, and the command for doing it by hand -- which is how they are
+  # run -- is in that test file's own docstring. The behaviour itself is
+  # covered live: the deployment runs this model on every question, and
+  # `ml copilot evaluate` scores ten of them.
+  #
+  # Renamed from `nightly-model`, and its `if: github.event_name ==
+  # 'workflow_dispatch'` went with the change that made the whole workflow
+  # manual. The display `name` is what a reader sees in the Actions tab, but
+  # the key is what a status check or a `gh run` filter would name, and a key
+  # saying `nightly` about a job that cannot run nightly is the same lie in a
+  # quieter place. The `if:` is gone because a condition every job satisfies is
+  # a sentence that says nothing -- and it would read as though some other job
+  # might still run on its own.
   inference-image:
     name: Inference image (on demand)
-    # Tightened from `schedule || workflow_dispatch` when the schedule went: the
-    # condition now says what actually starts it, rather than naming a trigger
-    # the workflow no longer has.
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

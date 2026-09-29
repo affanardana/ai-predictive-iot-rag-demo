@@ -56,6 +56,13 @@ asymmetry is the point: CI re-exports the document, regenerates the types and
 fails on any difference, so a schema change that was not reflected in the
 frontend is a red build rather than an empty table in production.
 
+**It is a check you have to start.** CI no longer runs on push, so nothing
+catches the drift by itself — after changing the API's schema, run
+`npm run gen:api` and then `git diff --exit-code -- src/api/schema.d.ts`, which
+is what the `web` job does. The deploy will not catch it either: Vercel
+type-checks against the committed file, which type-checks perfectly well while
+describing the old shape.
+
 ## Routes
 
 | Route | What it shows |
@@ -142,8 +149,11 @@ including a `//` key used as a comment — and JSON has no comment syntax anyway
 The build runs `tsc --noEmit && vite build`, so a type error fails the deploy
 rather than shipping. That works because `src/api/schema.d.ts` is **committed**
 rather than generated at build time, which means Vercel needs no Python
-toolchain and no access to the API. `apps/api/tests`' CI drift check is what
-keeps that file honest.
+toolchain and no access to the API. Keeping that file honest is the `web` job's
+drift check in `.github/workflows/ci.yml` — not `apps/api/tests`, which does not
+check it. **And that check only runs when the workflow is started by hand**, so
+a `schema.d.ts` left describing an old shape type-checks against itself and
+deploys cleanly. Run `npm run gen:api` whenever the API's schema moves.
 
 One environment variable:
 
