@@ -19,6 +19,11 @@ spec_driven_development/
 # repository, and is not published.
 README.full.md
 
+# Personal notes: a reference document and a walkthrough of the data journey,
+# written for the person who owns this repository rather than for a reader of
+# it. Not published, and free to be wrong in the ways personal notes are.
+notes/
+
 # --- Secrets ---------------------------------------------------------------
 # Never commit real credentials. `.env.example` is the committed template.
 .env

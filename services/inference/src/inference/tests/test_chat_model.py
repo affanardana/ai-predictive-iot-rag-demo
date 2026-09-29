@@ -7,15 +7,29 @@ The marker is named in `addopts` rather than merely declared, so a default run
 reports these as deselected rather than appearing to have checked them.
 
 **Where it runs: inside the inference image on the deployment host.** That is
-the only place both the weights and the runtime exist, and the image already
-carries this module:
+the only place both the weights and the runtime exist.
 
-    docker compose exec inference sh -c \\
+**And the tests have to be mounted in, because the image does not contain
+them.** `.dockerignore` excludes `**/tests/`, so `COPY services/inference/src/
+inference /app/src/inference` brings the service and not its test directory --
+which is why the command below is a `run` with a bind mount rather than an
+`exec` into the running container. The earlier version of this docstring said
+`docker compose exec`, and it could never have worked: `exec` cannot add a
+mount to a container that is already running, and the files it names are not
+there.
+
+From `infra/compose/` on the host:
+
+    docker compose run --rm \\
+      -v "$PWD/../../services/inference/src/inference/tests:/app/src/inference/tests:ro" \\
+      inference sh -c \\
       "pip install --quiet pytest && \\
        python -m pytest -m llm -q /app/src/inference/tests/test_chat_model.py"
 
-The `pip install` is ad hoc and disappears with the container; the image carries
-only what it needs in order to serve.
+`run` rather than `exec` also means the service's own environment comes with it,
+including `INFERENCE_CHAT_MODEL`, and that the `pip install` and the container
+both disappear afterwards. The image carries only what it needs in order to
+serve.
 
 **Why it is worth having.** Everything else about the Copilot is tested against
 a stub, and a stub can never fail the check the product's claim rests on -- it

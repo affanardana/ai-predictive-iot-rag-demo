@@ -4,11 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The model-backed job below downloads a 940 MB GGUF and builds a torch image.
-  # That is minutes of runner time and gigabytes of bandwidth for an image that
-  # changes rarely, so it runs nightly and on demand rather than on every push.
-  schedule:
-    - cron: "17 3 * * *"
+  # The model-backed job below downloads a 940 MB GGUF and builds a torch image,
+  # so it does not run on every push -- and it does not run on a schedule
+  # either. It ran nightly for a while and could never pass: `.dockerignore`
+  # excludes `**/tests/`, so the inference image contains no test files and
+  # `pytest` inside it had nothing to collect. A job that emails a failure every
+  # night without ever being right is worse than no job, because it teaches the
+  # habit of ignoring CI mail -- and the four jobs above it are the ones worth
+  # reading.
+  #
+  # It is kept rather than deleted because it has one real use: verifying that
+  # `Dockerfile.inference` still builds and the model still loads, before
+  # deploying a change to either. Start it from the Actions tab, or:
+  #     gh workflow run CI
   workflow_dispatch:
 
 concurrency:
@@ -222,17 +230,32 @@ jobs:
   # ---------------------------------------------------------------------------
   # The model-backed tier, which no per-push job can run.
   # ---------------------------------------------------------------------------
-  # `llm`-marked tests need the GGUF and `llama-cpp-python`, and both exist only
-  # in the inference image. They were never selected by any workflow before
-  # this: the marker declares them opt-in, and nothing opted in.
+  # **Run on demand only**, and not on a schedule: see the note on `on:` above
+  # for why the nightly version was retired.
   #
-  # It also builds `Dockerfile.inference`, which is the image that changes least
-  # and breaks worst -- torch, two sentence encoders fetched from HuggingFace,
-  # and a llama.cpp wheel pinned to an ABI. A build failure there is a failed
-  # deploy, and this is the only place that finds out before the deploy does.
-  nightly-model:
-    name: Model tier (inference image)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  # What it does that nothing else does is build `Dockerfile.inference` -- the
+  # image that changes least and breaks worst, with torch, two sentence encoders
+  # fetched from HuggingFace and a llama.cpp wheel pinned to an ABI. A build
+  # failure there is a failed deploy, and this is the one place to find out
+  # before the deploy does.
+  #
+  # **It does not currently run the `llm` tests, and says so rather than
+  # pretending.** Those tests need the GGUF *and* the test files, and
+  # `.dockerignore` excludes `**/tests/`, so the image has the model and not the
+  # tests. Making it run them means bind-mounting the directory in the `docker
+  # run` below; until then, the step exits non-zero and reports what is missing.
+  # The behaviour itself is covered live: the deployment runs this model on
+  # every question, and `ml copilot evaluate` scores ten of them.
+  # Renamed from `nightly-model` along with the schedule. The display `name`
+  # is what a reader sees in the Actions tab, but the key is what a status
+  # check or a `gh run` filter would name, and a key that says `nightly` about
+  # a job that cannot run nightly is the same lie in a quieter place.
+  inference-image:
+    name: Inference image (on demand)
+    # Tightened from `schedule || workflow_dispatch` when the schedule went: the
+    # condition now says what actually starts it, rather than naming a trigger
+    # the workflow no longer has.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -244,8 +267,49 @@ jobs:
       - name: Fetch the Copilot's model
         run: |
           mkdir -p model/chat
-          curl -fL --retry 3 -o model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf             https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
+          curl -fL --retry 3 -o model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+            https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
 
-      - name: Run the model-backed tests inside the image
+      # The check this job exists for: the GGUF loads inside the built image and
+      # the model produces an answer. That is what a deploy depends on, and it
+      # is the smallest command that proves it.
+      #
+      # **Not `pytest`, and the reason is the bug that retired the nightly
+      # schedule.** `.dockerignore` excludes `**/tests/`, so the image contains
+      # the model and no tests; the previous version of this step ran pytest
+      # against a directory that was never there and failed every night for it.
+      # A pytest invocation also needs config this image does not carry. This
+      # needs neither.
+      #
+      # The `llm`-marked tests still exist and still run -- by hand, on the
+      # host, by the command in the docstring of
+      # `services/inference/src/inference/tests/test_chat_model.py`. Written
+      # once, in the file it runs, so there is no second copy to drift. What is
+      # covered continuously is the behaviour: the deployment runs this model on
+      # every question, and `ml copilot evaluate` scores ten of them.
+      - name: Load the model and make it answer
         run: |
-          docker run --rm             -v "$PWD/model:/model:ro"             -e INFERENCE_CHAT_MODEL=/model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf             pdm-inference:ci sh -c "pip install --quiet pytest && python -m pytest -m llm -q /app/src/inference/tests/test_chat_model.py"
+          docker run --rm \
+            -v "$PWD/model:/model:ro" \
+            -e INFERENCE_CHAT_MODEL=/model/chat/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+            pdm-inference:ci python -c "
+          import os
+          from pathlib import Path
+
+          from inference.chat import LlamaChat, Turn
+          from inference.settings import Settings
+
+          settings = Settings(
+              checkpoint=Path('unused-by-this-check'),
+              artifact_dir=Path('unused-by-this-check'),
+              chat_model=Path(os.environ['INFERENCE_CHAT_MODEL']),
+          )
+          answer = ''.join(
+              LlamaChat(settings).stream(
+                  [Turn(role='user', content='Reply with the number 0.81 and nothing else.')],
+                  max_tokens=24,
+              )
+          )
+          print('the model said:', repr(answer.strip()))
+          assert answer.strip(), 'the model produced nothing at all'
+          "
