@@ -362,7 +362,10 @@ and the one an operator reads first would be the odd one.
 with reasons rather than an omission: see ADR 0010. In short — reads are open
 because a browser reads them, the expensive routes carry per-address rate limits
 and container limits instead, and row-level security on the database is what
-stops a leaked Supabase anon key reading anything.
+stops a leaked Supabase anon key reading anything. That claim covers every table
+in the `public` schema, Alembic's own version table included — the test sweeps
+the schema rather than checking a list, because a list is exactly how that table
+was missed the first time.
 
 ## Known limitations
 

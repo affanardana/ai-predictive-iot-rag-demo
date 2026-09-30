@@ -144,7 +144,12 @@ Migrations are applied from a developer machine, not from a container:
 docker compose run --rm api alembic -c /app/alembic.ini upgrade head
 ```
 
-Supabase is already migrated, so this is only needed against a fresh database.
+Supabase is already migrated to the revision it was deployed at, so this is not
+needed to stand the stack up. **It is needed after any new revision**, and a new
+revision does not announce itself: the API runs happily against a schema that is
+older than its models as long as the queries it makes still fit, so an unapplied
+migration is a fix that exists in the repository and not in the database. Run it
+when one lands.
 
 ## Publishing it — editing the other project's Caddyfile
 
